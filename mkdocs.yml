@@ -1,0 +1,3 @@
+site_name: AppDaemon API
+theme: mkdocs
+theme-dir: 'mkdocs-material/material'
