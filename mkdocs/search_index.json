@@ -1,0 +1,1839 @@
+{
+    "docs": [
+        {
+            "location": "/",
+            "text": "AppDaemon API Documentation\n\n\nAppDaemon is a loosely coupled, sandboxed, multi-threaded Python execution environment for writing automation apps for \nHome Assistant\n home automation software. It is intended to complement the Automation and Script components that Home Assistant currently offers.\n\n\nAnatomy of an App\n\n\nAutomations in AppDaemon are performed by creating a piece of code (essentially a Python Class) and then instantiating it as an Object one or more times by configuring it as an App in the configuration file. The App is given a chance to register itself for whatever events it wants to subscribe to, and AppDaemon will then make calls back into the Object's code when those events occur, allowing the App to respond to the event with some kind of action.\n\n\nThe first step is to create a unique file within the apps directory (as defined in the \n[AppDaemon]\n section of configuration file - see \nREADME\n for further information on the configuration of AppDaemon itself). This file is in fact a Python module, and is expected to contain one or more classes derived from the supplied \nAppDaemon\n class, imported from the supplied \nappdaemon.appapi\n module. The start of an app might look like this:\n\n\nimport appdaemon.appapi as appapi\n\nclass MotionLights(appapi.AppDaemon):\n\n\n\n\nWhen configured as an app in the config file (more on that later) the lifecycle of the App begins. It will be instantiated as an object by AppDaemon, and immediately, it will have a call made to it's \ninitialize()\n function - this function must appear as part of every app:\n\n\n  def initialize(self):\n  ```\n\nThe initialize function allows the app to register any callbacks it might need for responding to state changes, and also any setup activities. When the `initialize()` function returns, the App will be dormant until any of it's callbacks are activated.\n\nThere are several circumstances under which `initialize()` might be called:\n\n- Initial start of AppDaemon\n- Following a change to the Class code\n- Following a change to the module parameters\n- Following initial configuration of an app\n- Following a change in the status of Daylight Savings Time\n- Following a restart of Home Assistant\n\nIn every case, the App is responsible for recreating any state it might need as if it were the first time it was ever started. If `initialize()` is called, the app can safely assume that it is either being loaded for the first time, or that all callbacks and timers have been cancelled. In either case, the APP will need to recreate them. Depending upon the application it may be desirable for the App to establish state such as whether or not a particular light is on, within the `initialize()` function to ensure that everything is as expected or to make immediate remedial action (e.g. turn off a light that might have been left on by mistake when the app was restarted).\n\nAfter the `initialize()` function is in place, the rest of the app consists of functions that are called by the various callback mechanisms, and any additional functions the user wants to add as part of the program logic. Apps are able to subscribe to 2 main classes of events:\n\n- Scheduled Events\n- State Change Events\n\nThese, along with their various subscription calls and helper functions, will be described in detail in later sections.\n\nOptionally, a class can add a `terminate()` function. This function will be called ahead of the reload to allow the class to perform any tidy up that is necessary. \n\nWARNING: Unlike other types of callback, calls to `initialize() and `terminate()` are synchronous to AppDaemon's management code to ensure that initialization or cleanup is completed before the App is loaded or reloaded. This means that any significant delays in the `terminate()` code could have the effect of hanging AppDaemon for the duration of that code - this should be avoided.\n\nTo wrap up this section, here is a complete functioning App (with comments):\n\n```python\nimport appdaemon.appapi as appapi\nimport datetime\n\n# Declare Class\nclass NightLight(appapi.AppDaemon):\n  #initialize() function which will be called at startup and reload\n  def initialize(self):\n    # Create a time object for 7pm\n    time = datetime.time(19, 00, 0)\n    # Schedule a daily callback that will call run_daily() at 7pm every night\n    self.run_daily(self.run_daily_callback, time)\n\n   # Our callback function will be called by the scheduler every day at 7pm\n  def run_daily_callback(self, kwargs):\n    # Call to Home Assistant to turn the porch light on\n    self.turn_on(\"light.porch\")\n\n\n\n\nTo summarize - an App's lifecycle consists of being initialized, which allows it to set one or more state and/or schedule callbacks. When those callbacks are activated, the App will typically use one of the Service Calling calls to effect some change to the devices of the system and then wait for the next relevant state change. Finally, if the App is reloaded, there is a call to its \nterminate()\n function if it exists. That's all there is to it!\n\n\nAbout the API\n\n\nThe implementation of the API is located in the AppDaemon class that Apps are derived from. The code for the functions is therefore available to the App simply by invoking the name of the function from the object namespace using the \nself\n keyword, as in the above examples. \nself.turn_on()\n for example is just a method defined in the parent class and made available to the child. This design decision was made to simplify some of the implementation and hide passing of unnecessary variables during the API invocation.\n\n\nConfiguration of Apps\n\n\nApps are configured by specifying new sections in the configuration file. \n[AppDaemon]\n is a reserved section, described in the \nREADME\n for configuration of AppDaemon itself. The name of the section is the name the App is referred to within the system in log files etc. and must be unique.\n\n\nTo configure a new App you need a minimum of two directives:\n\n\n\n\nmodule\n - the name of the module (without the \n.py\n) that contains the class to be used for this App\n\n\nclass\n - the name of the class as defined within the module for the APPs code\n\n\n\n\nAlthough the section/App name must be unique, it is possible to re-use a class as many times as you want, and conversely to put as many classes in a module as you want. A sample definition for a new App might look as follows:\n\n\n[newapp]\nmodule = new\nclass = NewApp\n\n\n\n\nWhen AppDaemon sees the following configuration it will expect to find a class called \nNewApp\n defined in a module called \nnew.py\n in the apps subdirectory. Apps can be placed at the root of the Apps directory or within a subdirectory, an arbitrary depth down - wherever the App is, as long as it is in some subdirectory of the Apps dir, or in the Apps dir itself, AppDaemon will find it. There is no need to include information about the path, just the name of the file itself (without the \n.py\n) is sufficient. If names in the subdirectories overlap, AppDir will pick one of them but the exact choice it will make is undefined.\n\n\nWhen starting the system for the first time or when reloading an App or Module, the system will log the fact in it's main log. It is often the case that there is a problem with the class, maybe a syntax error or some other problem. If that is the case, details will be output to the error log allowing the user to remedy the problem and reload.\n\n\nSteps to writing an App\n\n\n\n\nCreate the code in a new or shared module by deriving a class from AppDaemon, add required callbacks and code\n\n\nAdd the App to the configuration file\n\n\nThere is no number 3\n\n\n\n\nReloading Modules and Classes\n\n\nReloading of modules is automatic. When the system spots a change in a module, it will automatically reload and recompile the module. It will also figure out which Apps were using that Module and restart them, causing their \nterminate()\n functions to be called if they exist, all of their existing callbacks to be cleared, and their \ninitialize()\n function to be called.\n\n\nThe same is true if changes are made to an App's configuration - changing the class, or arguments (see later) will cause that app to be reloaded in the same way. The system is also capable of detecting if a new app has been added, or if one has been removed, and it will act appropriately, starting the new app immediately and removing all callbacks for the removed app.\n\n\nThe suggested order for creating a new App is to add the module code first and work until it compiles cleanly, and only then add an entry in the configuration file to actually run it. A good workflow is to continuously monitor the error file (using \ntail -f\n on Linux for instance) to ensure that errors are seen and can be remedied.\n\n\nPassing Arguments to Apps\n\n\nThere wouldn't be much point in being able to run multiple versions of an App if there wasn't some way to instruct them to do something different. For this reason it is possible to pass any required arguments to an App, which are then made available to the object at runtime. The arguments themselves can be called anything (apart from \nmodule\n or \nclass\n) and are simply added into the section after the 2 mandatory directives like so:\n\n\n[MyApp]\nmodule = myapp\nclass = MyApp\nparam1 = spam\nparam2 = eggs\n\n\n\n\nWithin the Apps code, the 2 parameters (as well as the module and class) are available as a dictionary called \nargs\n, and accessed as follows:\n\n\nparam1 = self.args[\"param1\"]\nparam2 = self.args[\"param2\"]\n\n\n\n\nA use case for this might be an App that detects motion and turns on a light. If you have 3 places you want to run this, rather than hardcoding this into 3 separate Apps, you need only code a single app and instantiate it 3 times with different arguments. It might look something like this:\n\n\n[downstairs_motion_light]\nmodule = motion_light\nclass = MotionLight\nsensor = binary_sensor.downstairs_hall\nlight = light.downstairs_hall\n[upstairs_motion_light]\nmodule = motion_light\nclass = MotionLight\nsensor = binary_sensor.upstairs_hall\nlight = light.upstairs_hall\n[garage_motion_light]\nmodule = motion_light\nclass = MotionLight\nsensor = binary_sensor.garage\nlight = light.garage\n\n\n\n\nModule Dependencies\n\n\nIt is possible for modules to be dependant upon other modules. Some examples where this might be the case are:\n\n\n\n\nA Global module that defines constants for use in other modules\n\n\nA module that provides a service for other modules, e.g. a TTS module\n\n\nA Module that provides part of an object hierarchy to other modules\n\n\n\n\nIn these cases, when changes are made to one of these modules, we also want the modules that depend upon them to be reloaded. Furthermore, we also want to guarantee that they are loaded in order so that the modules dpended upon by other modules are loaded first.\n\n\nAppDaemon fully supports this through the use of the dependency directive in the App configuration. Using this directice, each App identifies modules that it depends upon. Note that the dependency is at the module level, not the App level, since a change to the module will force a reload of all apps using it anyway. The dependency directive will identify the module name of the App it cares about, and AppDaemon will see to it that the dependency is loaded before the module depending on it, and that the dependent module will be reloaded if it changes. \n\n\nFor example, an App \nConsumer\n, uses another app \nSound\n to play sound files. \nSound\n in turn uses \nGlobal\n to store some global values. We can represent these dependencies as follows:\n\n\n[Global]\nmodule = global\nclass = Global\n\n[Sound]\nmodule = sound\nclass = Sound\ndependencies = global # Note - module name not App name\n\n[Consumer]\nmodule = sound\nclass = Sound\ndependencies = sound\n\n\n\n\nIt is also possible to have multiple dependencies, added as a comma separate list (no spaces)\n\n\n[Consumer]\nmodule = sound\nclass = Sound\ndependencies = sound,global\n\n\n\n\nAppDaemon will write errors to the log if a dependency is missing and it should also detect circular dependencies.\n\n\nCallback Constraints\n\n\nCallback constraints are a feature of AppDaemon that removes the need for repetition of some common coding checks. Many Apps will wish to process their callbacks only when certain conditions are met, e.g. someone is home, and it's after sunset. These kinds of conditions crop up a lot, and use of callback constraints can significantly simplify the logic required within callbacks.\n\n\nPut simply, callback constraints are one or more conditions on callback execution that can be applied to an individual App. An App's callbacks will only be executed if all of the constraints are met. If a constraint is absent it will not be checked for.\n\n\nFor example, the presence callback constraint can be added to an App by adding a parameter to it's configuration like this:\n\n\n[some_app]\nmodule = some_module\nclass = SomeClass\nconstrain_presence = noone\n\n\n\n\nNow, although the \ninitialize()\n function will be called for SomeClass, and it will have a chance to register as many callbacks as it desires, none of the callbacks will execute, in this case, until everyone has left. This could be useful for an interior motion detector App for instance. There are several different types of constraints:\n\n\n\n\ninput_boolean\n\n\ninput_select\n\n\npresence\n\n\ntime\n\n\n\n\nAn App can have as many or as few as are required. When more than one constraint is present, they must all evaluate to true to allow the callbacks to be called. Constraints becoming true are not an event in their own right, but if they are all true at a point in time, the next callback that would otherwise been blocked due to constraint failure will now be called. Similarly, if one of the constraints becomes false, the next callback that would otherwise have been called will be blocked.\n\n\nThey are described individually below.\n\n\ninput_boolean\n\n\nBy default, the input_boolean constraint prevents callbacks unless the specified input_boolean is set to \"on\". This is useful to allow certain Apps to be turned on and off from the user interface. For example:\n\n\n[some_app]\nmodule = some_module\nclass = SomeClass\nconstrain_input_boolean = input_boolean.enable_motion_detection\n\n\n\n\nIf you want to reverse the logic so the constraint is only called when the input_boolean is off, use the optional state parameter by appending \",off\" to the argument, e.g.:\n\n\n[some_app]\nmodule = some_module\nclass = SomeClass\nconstrain_input_boolean = input_boolean.enable_motion_detection,off\n\n\n\n\ninput_select\n\n\nThe input_select constraint prevents callbacks unless the specified input_select is set to one or more of the nominated (comma separated) values. This is useful to allow certain Apps to be turned on and off according to some flag, e.g. a house mode flag.\n\n\n# Single value\nconstrain_input_select = input_select.house_mode,Day\n# or multiple values\nconstrain_input_select = input_select.house_mode,Day,Evening,Night\n\n\n\n\npresence\n\n\nThe presence constraint will constrain based on presence of device trackers. It takes 3 possible values:\n- \nnoone\n - only allow callback execution when no one is home\n- \nanyone\n - only allow callback execution when one or more person is home\n- \neveryone\n - only allow callback execution when everyone is home\n\n\nconstrain_presence = anyone\n# or\nconstrain_presence = someone\n# or\nconstrain_presence = noone\n\n\n\n\ntime\n\n\nThe time constraint consists of 2 variables, \nconstrain_start_time\n and \nconstrain_end_time\n. Callbacks will only be executed if the current time is between the start and end times.\n- If both are absent no time constraint will exist\n- If only start is present, end will default to 1 second before midnight\n- If only end is present, start will default to midnight\n\n\nThe times are specified in a string format with one of the following formats:\n- HH:MM:SS - the time in Hours Minutes and Seconds, 24 hour format.\n- \nsunrise\n|\nsunset\n [+|- HH:MM:SS]- time of the next sunrise or sunset with an optional positive or negative offset in Hours Minutes and seconds\n\n\nThe time based constraint system correctly interprets start and end times that span midnight.\n\n\n# Run between 8am and 10pm\nconstrain_start_time = 08:00:00\nconstrain_end_time = 22:00:00\n# Run between sunrise and sunset\nconstrain_start_time = sunrise\nconstrain_end_time = sunset\n# Run between 45 minutes before sunset and 45 minutes after sunrise the next day\nconstrain_start_time = sunset - 00:45:00\nconstrain_end_time = sunrise + 00:45:00\n\n\n\n\ndays\n\n\nThe day constraint consists of as list of days for which the callbacks will fire, e.g.\n\n\nconstrain_days = mon,tue,wed\n\n\n\n\nCallback constraints can also be applied to individual callbacks within Apps, see later for more details.\n\n\nA Note on Threading\n\n\nAppDaemon is multithreaded. This means that any time code within an App is executed, it is executed by one of many threads. This is generally not a particularly important consideration for this application; in general, the execution time of callbacks is expected to be far quicker than the frequency of events causing them. However, it should be noted for completeness, that it is certainly possible for different pieces of code within the App to be executed concurrently, so some care may be necessary if different callback for instance inspect and change shared variables. This is a fairly standard caveat with concurrent programming, and if you know enough to want to do this, then you should know enough to put appropriate safeguards in place. For the average user however this shouldn't be an issue. If there are sufficient use cases to warrant it, I will consider adding locking to the function invocations to make the entire infrastructure threadsafe, but I am not convinced that it is necessary.\n\n\nAn additional caveat of a threaded worker pool environment is that it is the expectation that none of the callbacks tie threads up for a significant amount of time. To do so would eventually lead to thread exhaustion, which would make the system run behind events. No events would be lost as they would be queued, but callbacks would be delayed which is a bad thing.\n\n\nGiven the above, NEVER use Python's \ntime.sleep()\n if you want to perform an operation some time in the future, as this will tie up a thread for the period of the sleep. Instead use the scheduler's \nrun_in()\n function which will allow you to delay without blocking any threads.\n\n\nState Operations\n\n\nA note on Home Assistant State\n\n\nState within Home Assistant is stored as a collection of dictionaries, one for each entity. Each entity's dictionary will have some common fields and a number of entity type specific fields The state for an entity will always have the attributes:\n\n\n\n\nlast_updated\n\n\nlast_changed\n\n\nstate\n\n\n\n\nAny other attributes such as brightness for a lamp will only be present if the entity supports them, and will be stored in a sub-dictionary called \nattributes\n. When specifying these optional attributes in the \nget_state()\n call, no special distinction is required between the main attributes and the optional ones - \nget_state()\n will figure it out for you.\n\n\nAlso bear in mind that some attributes such as brightness for a light, will not be present when the light is off.\n\n\nIn most cases, the attribute \nstate\n has the most important value in it, e.g. for a light or switch this will be \non\n or \noff\n, for a sensor it will be the value of that sensor. Many of the AppDaemon API calls and callbacks will implicitly return the value of state unless told to do otherwise.\n\n\nget_state()\n\n\nSynopsis\n\n\nget_state(entity = None, attribute = None)\n\n\n\n\nget_state()\n is used to query the state of any component within Home Assistant. State updates are continuously tracked so this call runs locally and does not require AppDaemon to call back to Home Assistant and as such is very efficient.\n\n\nReturns\n\n\nget_state()\n returns a \ndictionary\n or single value, the structure of which varies according to the parameters used. If an entity or attribute does not exist, \nget_state()\n will return \nNone\n.\n\n\nParameters\n\n\nAll parameters are optional, and if \nget_state()\n is called with no parameters it will return the entire state of Home Assistant at that given time. This will consist of a dictionary with a key for each entity. Under that key will be the standard entity state information.\n\n\nentity\n\n\nThis is the name of an entity or device type. If just a device type is provided, e.g. \nlight\n or \nbinary_sensor\n, \nget_state()\n will return a dictionary of all devices of that type, indexed by the entity_id, containing all the state for each entity.\n\n\nIf a fully qualified \nentity_id\n is provided, \nget_state()\n will return the state attribute for that entity, e.g. \non\n or \noff\n for a light.\n\n\nattribute\n\n\nName of an attribute within the entity state object. If this parameter is specified in addition to a fully qualified \nentity_id\n, a single value representing the attribute will be returned, or \nNone\n if it is not present.\n\n\nThe value \nall\n for attribute has special significance and will return the entire state dictionary for the specified entity rather than an individual attribute value.\n\n\nExamples\n\n\n# Return state for the entire system\nstate = self.get_state()\n\n# Return state for all switches in the system\nstate = self.get_state(\"switch\")\n\n# Return the state attribute for light.office_1\nstate = self.get_state(\"light.office_1\")\n\n# Return the brightness attribute for light.office_1\nstate = self.get_state(\"light.office_1\", \"brightness\")\n\n# Return the entire state for light.office_1\nstate = self.get_state(\"light.office_1\", \"all\")\n\n\n\n\nset_state()\n\n\nset_state()\n will make a call back to Home Assistant and make changes to the internal state of Home Assistant. This is not something that you would usually want to do and the applications are limited however the call is included for completeness. Note that for instance, setting the state of a light to \non\n won't actually switch the device on, it will merely change the state of the device in Home Assistant so that it no longer reflects reality. In most cases, the state will be corrected the next time Home Assistant polls the device or someone causes a state change manually. To effect actual changes of devices use one of the service call functions.\n\n\nOne possible use case for \nset_state()\n is for testing. If for instance you are writing an App to turn on a light when it gets dark according to a luminance sensor, you can use \nset_state()\n to temporarily change the light level reported by the sensor to test your program. However this is also possible using the developer tools.\n\n\nAt the time of writing, it appears that no checking is done as to whether or not the entity exists, so it is possible to add entirely new entries to Home Assistant's state with this call.\n\n\nSynopsis\n\n\nset_state(entity_id, **kwargs)\n\n\n\n\nReturns\n\n\nset_state()\n returns a dictionary representing the state of the device after the call has completed.\n\n\nParameters\n\n\nentity_id\n\n\nEntity id for which the state is to be set, e.g. \nlight.office_1\n.\n\n\nvalues\n\n\nA list of keyword values to be changed or added to the entities state. e.g. \nstate = \"off\"\n. Note that any optional attributes such as colors for bulbs etc, need to reside in a dictionary called \nattributes\n; see the example.\n\n\nExamples\n\n\nstatus = self.set_state(\"light.office_1\", state = \"on\", attributes = {\"color_name\": \"red\"})\n\n\n\n\nAbout Callbacks\n\n\nA large proportion of home automation revolves around waiting for something to happen and then reacting to it; a light level drops, the sun rises, a door opens etc. Home Assistant keeps track of every state change that occurs within the system and streams that information to AppDaemon almost immediately.\n\n\nAn individual App however usually doesn't care about the majority of state changes going on in the system; Apps usually care about something very specific, like a specific sensor or light. Apps need a way to be notified when a state change happens that they care about, and be able to ignore the rest. They do this through registering callbacks. A callback allows the App to describe exactly what it is interested in, and tells AppDaemon to make a call into its code in a specific place to be able to react to it - this is a very familiar concept to anyone familiar with event-based programming.\n\n\nThere are 3 types of callbacks within AppDaemon:\n\n\n\n\nState Callbacks - react to a change in state\n\n\nScheduler Callbacks - react to a specific time or interval\n\n\nEvent Callbacks - react to specific Home Assistant and Appdaemon events.\n\n\n\n\nAll callbacks allow the user to specify additional parameters to be handed to the callback via the standard Python \n**kwargs\n mechanism for greater flexibility, these additional arguments are handed to the callback as a standard Python dictionary,\n\n\nAbout Registering Callbacks\n\n\nEach of the various types of callback have their own function or functions for registering the callback:\n\n\n\n\nlisten_state()\n for state callbacks\n\n\nVarious scheduler calls such as \nrun_once()\n for scheduler callbacks\n\n\nlisten_event()\n for event callbacks.\n\n\n\n\nEach type of callback shares a number of common mechanisms that increase flexibility.\n\n\nCallback Level Constraints\n\n\nWhen registering a callback, you can add constraints identical to the Application level constraints described earlier. The difference is that a constraint applied to an individual callback only affects that callback and no other. The constraints are applied by adding Python keyword-value style arguments after the positional arguments. The parameters themselves are named identically to the previously described constraints and have identical functionality. For instance, adding:\n\n\nconstrain_presence=\"everyone\"\n\n\nto a callback registration will ensure that the callback is only run if the callback conditions are met and in addition everyone is present although any other callbacks might run whenever their event fires if they have no constraints.\n\n\nFor example:\n\n\nself.listen_state(self.motion, \"binary_sensor.drive\", constrain_presence=\"everyone\")\n\n\nUser Arguments\n\n\nAny callback has the ability to allow the App creator to pass through arbitrary keyword arguments that will be presented to the callback when it is run. The arguments are added after the positional parameters just like the constraints. The only restriction is that they cannot be the same as any constraint name for obvious reasons. For example, to pass the parameter \narg1 = \"home assistant\"\n through to a callback you would register a callback as follows:\n\n\nself.listen_state(self.motion, \"binary_sensor.drive\", arg1=\"home assistant\")\n\n\nThen in the callback it is presented back to the function as a dictionary and you could use it as follows:\n\n\ndef motion(self, entity, attribute, old, new, kwargs):\n    self.log(\"Arg1 is {}\".format(kwargs[\"arg1\"]))\n\n\n\n\nState Callbacks\n\n\nAppDaemons's state callbacks allow an App to listen to a wide variety of events, from every state change in the system, right down to a change of a single attribute of a particular entity. Setting up a callback is done using a single API call \nlisten_state()\n which takes various arguments to allow it to do all of the above. Apps can register as many or as few callbacks as they want.\n\n\nAbout State Callback Functions\n\n\nWhen calling back into the App, the App must provide a class function with a known signature for AppDaemon to call. The callback will provide various information to the function to enable the function to respond appropriately. For state callbacks, a class defined callback function should look like this:\n\n\n  def my_callback(self, entity, attribute, old, new, kwargs):\n    <do some useful work here>\n\n\n\n\nYou can call the function whatever you like - you will reference it in the \nlisten_state()\n call, and you can create as many callback functions as you need.\n\n\nThe parameters have the following meanings:\n\n\nself\n\n\nA standard Python object reference.\n\n\nentity\n\n\nName of the entity the callback was requested for or \nNone\n.\n\n\nattribute\n\n\nName of the attribute the callback was requested for or \nNone\n.\n\n\nold\n\n\nThe value of the state before the state change.\n\n\nnew\n\n\nThe value of the state after the state change.\n\n\nold\n and \nnew\n will have varying types depending on the type of callback.\n\n\n**kwargs\n\n\nA dictionary containing any constraints and/or additional user specific keyword arguments supplied to the \nlisten_state()\n call.\n\n\nlisten_state()\n\n\nlisten_state()\n allows the user to register a callback for a wide variety of state changes.\n\n\nSynopsis\n\n\nhandle = listen_state(callback, entity = None, **kwargs)\n\n\n\n\nReturns\n\n\nA unique identifier that can be used to cancel the callback if required. Since variables created within object methods are local to the function they are created in, and in all likelihood the cancellation will be invoked later in a different function, it is recommended that handles are stored in the object namespace, e.g. \nself.handle\n.\n\n\nParameters\n\n\nAll parameters except \ncallback\n are optional, and if \nlisten_state()\n is called with no additional parameters it will subscribe to any state change within Home Assistant.\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard State Callback format documented above.\n\n\nentity\n\n\nThis is the name of an entity or device type. If just a device type is provided, e.g. \nlight\n or \nbinary_sensor\n, \nlisten_state()\n will subscribe to state changes of all devices of that type. If a fully qualified \nentity_id\n is provided, \nlisten_state()\n will listen for state changes for just that entity.\n\n\nWhen called, AppDaemon will supply the callback function, in old and new, with the state attribute for that entity, e.g. \non\n or \noff\n for a light.\n\n\nattribute (optional)\n\n\nName of an attribute within the entity state object. If this parameter is specified in addition to a fully qualified \nentity_id\n, \nlisten_state()\n will subscribe to changes for just that attribute within that specific entity. The new and old parameters in the callback function will be provided with a single value representing the attribute.\n\n\nThe value \nall\n for attribute has special significance and will listen for any state change within the specified entity, and supply the callback functions with the entire state dictionary for the specified entity rather than an individual attribute value.\n\n\nnew = \n (optional)\n\n\nIf \nnew\n is supplied as a parameter, callbacks will only be made if the state of the selected attribute (usually \nstate\n) in the new state match the value of \nnew\n.\n\n\nold =  \n (optional)\n\n\nIf \nold\n is supplied as a parameter, callbacks will only be made if the state of the selected attribute (usually \nstate\n) in the old state match the value of \nold\n.\n\n\nNote: \nold\n and \nnew\n can be used singly or together.\n\n\nduration =  \n (optional)\n\n\nIf duration is supplied as a parameter, the callback will not fire unless the state listened for is maintained for that number of seconds. This makes the most sense if a specific attribute is specified (or the default os \nstate\n is used), an in conjunction with the \nold\n or \nnew\n parameters, or both. When the callback is called, it is supplied with the values of \nentity\n, \nattr\n, \nold\n and \nnew\n that were current at the time the actual event occured, since the assumption is that none of them have changed in the intervening period.\n\n\n  def my_callback(self, kwargs):\n    <do some useful work here>\n\n\n\n\n(Scheduler callbacks are documented in detail later in this document)\n\n\n**kwargs\n\n\nZero or more keyword arguments that will be supplied to the callback when it is called.\n\n\nExamples\n\n\n# Listen for any state change and return the state attribute\nself.handle = self.listen_state(self.my_callback)\n\n# Listen for any state change involving a light and return the state attribute\nself.handle = self.listen_state(self.my_callback, \"light\")\n\n# Listen for a state change involving light.office1 and return the state attribute\nself.handle = self.listen_state(self.my_callback, \"light.office_1\")\n\n# Listen for a state change involving light.office1 and return the entire state as a dict\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", attribute = \"all\")\n\n# Listen for a state change involving the brightness attribute of light.office1\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", attribute = \"brightness\")\n\n# Listen for a state change involving light.office1 turning on and return the state attribute\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", new = \"on\")\n\n# Listen for a state change involving light.office1 changing from brightness 100 to 200 and return the state attribute\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", old = \"100\", new = \"200\")\n\n# Listen for a state change involving light.office1 changing to state on and remaining on for a minute\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", new = \"on\", duration = 60)\n\n\n\n\n\ncancel_listen_state()\n\n\nCancel a \nlisten_state()\n callback. This will mean that the App will no longer be notified for the specific state change that has been cancelled. Other state changes will continue to be monitored.\n\n\nSynopsis\n\n\ncancel_listen_state(handle)\n\n\n\n\nReturns\n\n\nNothing\n\n\nParameters\n\n\nhandle\n\n\nThe handle returned when the \nlisten_state()\n call was made.\n\n\nExamples\n\n\nself.cancel_listen_state(self.office_light_handle)\n\n\n\n\ninfo_listen_state()\n\n\nGet information on state a callback from it's handle.\n\n\nSynopsis\n\n\nentity, attribute, kwargs = self.info_listen_state(self.handle)\n\n\n\n\nReturns\n\n\nentity, attribute, kwargs - the values supplied when the callback was initially created.\n\n\nParameters\n\n\nhandle\n\n\nThe handle returned when the \nlisten_state()\n call was made.\n\n\nExamples\n\n\nentity, attribute, kwargs = self.info_listen_state(self.handle)\n\n\n\n\nScheduler\n\n\nAppDaemon contains a powerful scheduler that is able to run with 1 second resolution to fire off specific events at set times, or after set delays, or even relative to sunrise and sunset. In general, events should be fired less than a second after specified but under certain circumstances there may be short additional delays.\n\n\nAbout Schedule Callbacks\n\n\nAs with State Change callbacks, Scheduler Callbacks expect to call into functions with a known and specific signature and a class defined Scheduler callback function should look like this:\n\n\n  def my_callback(self, kwargs):\n    <do some useful work here>\n\n\n\n\nYou can call the function whatever you like; you will reference it in the Scheduler call, and you can create as many callback functions as you need.\n\n\nThe parameters have the following meanings:\n\n\nself\n\n\nA standard Python object reference\n\n\n**kwargs\n\n\nA dictionary containing Zero or more keyword arguments to be supplied to the callback.\n\n\nCreation of Scheduler Callbacks\n\n\nScheduler callbacks are created through use of a number of convenience functions which can be used to suit the situation.\n\n\nrun_in()\n\n\nRun the callback in a defined number of seconds. This is used to add a delay, for instance a 60 second delay before a light is turned off after it has been triggered by a motion detector. This callback should always be used instead of \ntime.sleep()\n as discussed previously.\n\n\nSynopsis\n\n\nself.handle = self.run_in(callback, delay, **kwargs)\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the timer.\n\n\nParameters\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.\n\n\ndelay\n\n\nDelay, in seconds before the callback is invoked.\n\n\n**kwargs\n\n\nArbitary keyword parameters to be provided to the callback function when it is invoked.\n\n\nExamples\n\n\nself.handle = self.run_in(self.run_in_c)\nself.handle = self.run_in(self.run_in_c, title = \"run_in5\")\n\n\n\n\nrun_once()\n\n\nRun the callback once, at the specified time of day. If the time of day is in the past, the callback will occur on the next day.\n\n\nSynopsis\n\n\nself.handle = self.run_once(callback, time, **kwargs)\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the timer.\n\n\nParameters\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.\n\n\ntime\n\n\nA Python \ntime\n object that specifies when the callback will occur. If the time specified is in the past, the callback will occur the next day at the specified time.\n\n\n**kwargs\n\n\nArbitary keyword parameters to be provided to the callback function when it is invoked.\n\n\nExamples\n\n\n# Run at 4pm today, or 4pm tomorrow if it is already after 4pm\nimport datetime\n...\nruntime = datetime.time(16, 0, 0)\nhandle = self.run_once(self.run_once_c, runtime)\n\n\n\n\nrun_at()\n\n\nRun the callback once, at the specified date and time.\n\n\nSynopsis\n\n\nself.handle = self.run_at(callback, datetime, **kwargs)\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the timer. \nrun_at()\n will raise an exception if the specified time is in the past.\n\n\nParameters\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.\n\n\ndatetime\n\n\nA Python \ndatetime\n object that specifies when the callback will occur.\n\n\n**kwargs\n\n\nArbitary keyword parameters to be provided to the callback function when it is invoked.\n\n\nExamples\n\n\n# Run at 4pm today\nimport datetime\n...\nruntime = datetime.time(16, 0, 0)\ntoday = datetime.date.today()\nevent = datetime.datetime.combine(today, runtime)\nhandle = self.run_once(self.run_once_c, event)\n\n\n\n\nrun_daily()\n\n\nExecute a callback at the same time every day. If the time has already passed, the function will not be invoked until the following day at the specified time.\n\n\nSynopsis\n\n\nself.handle = self.run_daily(callback, start, **kwargs)\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the timer.\n\n\nParameters\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.\n\n\nstart\n\n\nA Python \ntime\n object that specifies when the callback will occur. If the time specified is in the past, the callback will occur the next day at the specified time.\n\n\n**kwargs\n\n\nArbitary keyword parameters to be provided to the callback function when it is invoked.\n\n\nExamples\n\n\n# Run daily at 7pm\nimport datetime\n...\ntime = datetime.time(19, 0, 0)\nself.run_daily(self.run_daily_c, runtime)\n\n\n\n\nrun_hourly()\n\n\nExecute a callback at the same time every hour. If the time has already passed, the function will not be invoked until the following hour at the specified time.\n\n\nSynopsis\n\n\nself.handle = self.run_hourly(callback, start, **kwargs)\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the timer.\n\n\nParameters\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.\n\n\nstart\n\n\nA Python \ntime\n object that specifies when the callback will occur, the hour component of the time object is ignored. If the time specified is in the past, the callback will occur the next hour at the specified time. If time is not supplied, the callback will start an hour from the time that \nrun_hourly()\n was executed.\n\n\n**kwargs\n\n\nArbitary keyword parameters to be provided to the callback function when it is invoked.\n\n\nExamples\n\n\n# Run every hour, on the hour\nimport datetime\n...\ntime = datetime.time(0, 0, 0)\nself.run_hourly(self.run_hourly_c, runtime)\n\n\n\n\nrun_minutely()\n\n\nExecute a callback at the same time every minute. If the time has already passed, the function will not be invoked until the following minute at the specified time.\n\n\nSynopsis\n\n\nself.handle = self.run_minutely(callback, start, **kwargs)\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the timer.\n\n\nParameters\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.\n\n\nstart\n\n\nA Python \ntime\n object that specifies when the callback will occur, the hour and minute components of the time object are ignored. If the time specified is in the past, the callback will occur the next hour at the specified time. If time is not supplied, the callback will start a minute from the time that \nrun_minutely()\n was executed.\n\n\n**kwargs\n\n\nArbitary keyword parameters to be provided to the callback function when it is invoked.\n\n\nExamples\n\n\n# Run Every Minute on the minute\nimport datetime\n...\ntime = datetime.time(0, 0, 0)\nself.run_minutely(self.run_minutely_c, time)\n\n\n\n\nrun_every()\n\n\nExecute a repeating callback with a configurable delay starting at a specific time.\n\n\nSynopsis\n\n\nself.handle = self.run_every(callback, time, repeat, **kwargs)\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the timer.\n\n\nParameters\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.\n\n\ntime\n\n\nA Python \ndatetime\n object that specifies when the initial callback will occur.\n\n\nrepeat\n\n\nAfter the initial callback has occurred, another will occur every \nrepeat\n seconds.\n\n\n**kwargs\n\n\nArbitary keyword parameters to be provided to the callback function when it is invoked.\n\n\nExamples\n\n\n# Run every 17 minutes starting in 2 hours time\nimport datetime\n...\nself.run_every(self.run_every_c, time, 17 * 60)\n\n\n\n\ncancel_timer()\n\n\nCancel a previously created timer\n\n\nSynopsis\n\n\nself.cancel_timer(handle)\n\n\n\n\nReturns\n\n\nNone\n\n\nParameters\n\n\nhandle\n\n\nA handle value returned from the original call to create the timer.\n\n\nExamples\n\n\nself.cancel_timer(handle)\n\n\n\n\ninfo_timer()\n\n\nGet information on a scheduler event from it's handle.\n\n\nSynopsis\n\n\ntime, interval, kwargs = self.info_timer(handle)\n\n\n\n\nReturns\n\n\ntime - datetime object representing the next time the callback will be fired\n\n\ninterval - repeat interval if applicable, \n0\n otherwise.\n\n\nkwargs - the values supplied when the callback was initially created.\n\n\nParameters\n\n\nhandle\n\n\nThe handle returned when the scheduler call was made.\n\n\nExamples\n\n\ntime, interval, kwargs = self.info_timer(handle)\n\n\n\n\nScheduler Randomization\n\n\nAll of the scheduler calls above support 2 additional optional arguments, \nrandom_start\n and \nrandom_end\n. Using these arguments it is possible to randomize the firing of callbacks to the degree desired by setting the appropriate number of seconds with the parameters.\n\n\n\n\nrandom_start\n - start of range of the random time\n\n\nrandom_end\n - end of range of the random time \n\n\n\n\nrandom_start\n must always be numerically lower than \nrandom_end\n, they can be negative to denote a random offset before and event, or positive to denote a random offset after an event. The event would be a an absolute or relative time or sunrise/sunset depending on whcih scheduler call you use and these values affect the base time by the spcified amount. If not specified, they will default to \n0\n.\n\n\nFor example:\n\n\n# Run a callback in 2 minutes minus a random number of seconds between 0 and 60, e.g. run between 60 and 120 seconds from now\nself.handle = self.run_in(callback, 120, random_start = -60, **kwargs)\n# Run a callback in 2 minutes plus a random number of seconds between 0 and 60, e.g. run between 120 and 180 seconds from now\nself.handle = self.run_in(callback, 120, random_end = 60, **kwargs)\n# Run a callback in 2 minutes plus or minus a random number of seconds between 0 and 60, e.g. run between 60 and 180 seconds from now\nself.handle = self.run_in(callback, 120, random_start = -60, random_end = 60, **kwargs)\n\n\n\n\nSunrise and Sunset\n\n\nAppDaemon has a number of features to allow easy tracking of sunrise and sunset as well as a couple of scheduler functions. Note that the scheduler functions also support the randomization parameters described above, but they cannot be used in conjunction with the \noffset\n parameter`.\n\n\nrun_at_sunrise()\n\n\nRun a callback at or around sunrise.\n\n\nSynopsis\n\n\nself.handle = self.run_at_sunrise(callback, **kwargs)\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the timer.\n\n\nParameters\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.\n\n\noffset = \n\n\nThe time in seconds that the callback should be delayed after sunrise. A negative value will result in the callback occurring before sunrise. This parameter cannot be combined with \nrandom_start\n or \nrandom_end\n\n\n**kwargs\n\n\nArbitary keyword parameters to be provided to the callback function when it is invoked.\n\n\nExamples\n\n\nimport datetime\n...\n# Run 45 minutes before sunset\nself.run_at_sunrise(self.sun, offset = datetime.timedelta(minutes = -45).total_seconds(), \"Sunrise -45 mins\")\n# or you can just do the math yourself\nself.run_at_sunrise(self.sun, offset = 30 * 60, \"Sunrise +30 mins\")\n# Run at a random time +/- 60 minutes from sunrise\nself.run_at_sunrise(self.sun, random_start = -60*60, random_end = 60*60, \"Sunrise, random +/- 60 mins\")\n# Run at a random time between 30 and 60 minutes before sunrise\nself.run_at_sunrise(self.sun, random_start = -60*60, random_end = 30*60, \"Sunrise, random - 30 - 60 mins\")\n\n\n\n\nrun_at_sunset()\n\n\nRun a callback at or around sunset.\n\n\nSynopsis\n\n\nself.handle = self.run_at_sunset(callback, offset, **kwargs)\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the timer.\n\n\nParameters\n\n\ncallback\n\n\nFunction to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.\n\n\noffset = \n\n\nThe time in seconds that the callback should be delayed after sunrise. A negative value will result in the callback occurring before sunrise. This parameter cannot be combined with \nrandom_start\n or \nrandom_end\n\n\n**kwargs\n\n\nArbitary keyword parameters to be provided to the callback function when it is invoked.\n\n\nExamples\n\n\n# Example using timedelta\nimport datetime\n...\nself.run_at_sunset(self.sun, datetime.timedelta(minutes = -45).total_seconds(), \"Sunset -45 mins\")\n# or you can just do the math yourself\nself.run_at_sunset(self.sun, 30 * 60, \"Sunset +30 mins\")\n# Run at a random time +/- 60 minutes from sunset\nself.run_at_sunset(self.sun, random_start = -60*60, random_end = 60*60, \"Sunset, random +/- 60 mins\")\n# Run at a random time between 30 and 60 minutes before sunset\nself.run_at_sunset(self.sun, random_start = -60*60, random_end = 30*60, \"Sunset, random - 30 - 60 mins\")\n\n\n\n\nsunrise()\n\n\nReturn the time that the next Sunrise will occur.\n\n\nSynopsis\n\n\nself.sunrise()\n\n\n\n\nReturns\n\n\nA Python datetime that represents the next time Sunrise will occur.\n\n\nExamples\n\n\nrise_time = self.sunrise()\n\n\n\n\nsunset()\n\n\nReturn the time that the next Sunset will occur.\n\n\nSynopsis\n\n\nself.sunset()\n\n\n\n\nReturns\n\n\nA Python datetime that represents the next time Sunset will occur.\n\n\nExamples\n\n\nset_time = self.sunset()\n\n\n\n\nsun_up()\n\n\nA function that allows you to determine if the sun is currently up.\n\n\nSynopsis\n\n\nresult = self.sun_up()\n\n\n\n\nReturns\n\n\nTrue\n if the sun is up, False otherwise.\n\n\nExamples\n\n\nif self.sun_up():\n    do something\n\n\n\n\nsun_down()\n\n\nA function that allows you to determine if the sun is currently down.\n\n\nSynopsis\n\n\nresult = self.sun_down()\n\n\n\n\nReturns\n\n\nTrue\n if the sun is down, False otherwise.\n\n\nExamples\n\n\nif self.sun_down():\n    do something\n\n\n\n\nCalling Services\n\n\nAbout Services\n\n\nServices within Home Assistant are how changes are made to the system and its devices. Services can be used to turn lights on and off, set thermostats and a whole number of other things. Home Assistant supplies a single interface to all these disparate services that take arbitrary parameters. AppDaemon provides the \ncall_service()\n function to call into Home Assistant and run a service. In addition, it also provides convenience functions for some of the more common services making calling them a little easier.\n\n\ncall_service()\n\n\nCall service is the basic way of calling a service within AppDaemon. It can call any service and provide any required parameters. Available services can be found using the developer tools in the UI. For listed services, the part before the first period is the domain, and the part after is the service name. For instance, \nlight.turn_on\n has a domain of \nlight\n and a service name of \nturn_on\n.\n\n\nSynopsis\n\n\nself.call_service(self, service, **kwargs)\n\n\n\n\nReturns\n\n\nNone\n\n\nParameters\n\n\nservice\n\n\nThe service name, e.g. \nlight.turn_on\n.\n\n\n**kwargs\n\n\nEach service has different parameter requirements. This argument allows you to specify a comma separated list of keyword value pairs, e.g. \nentity_id = light.office_1\n. These parameters will be different for every service and can be discovered using the developer tools. Most if not all service calls require an \nentity_id\n however, so use of the above example is very common with this call.\n\n\nExamples\n\n\nself.call_service(\"light/turn_on\", entity_id = \"light/office_lamp\", color_name = \"red\")\nself.call_service(\"notify/notify\", title = \"Hello\", message = \"Hello World\")\n\n\n\n\nturn_on()\n\n\nThis is a convenience function for the \nhomassistant.turn_on\n function. It is able to turn on pretty much anything in Home Assistant that can be turned on or run:\n\n\n\n\nLights\n\n\nSwitches\n\n\nScenes\n\n\nScripts\n\n\n\n\nAnd many more.\n\n\nSynopsis\n\n\nself.turn_on(entity_id, **kwargs)\n\n\n\n\nReturns\n\n\nNone\n\n\nParameters\n\n\nentity_id\n\n\nFully qualified entity_id of the thing to be turned on, e.g. \nlight.office_lamp\n or \nscene.downstairs_on\n\n\n**kwargs\n\n\nA comma separated list of key value pairs to allow specification of parameters over and above \nentity_id\n.\n\n\nExamples\n\n\nself.turn_on(\"switch.patio_lights\")\nself.turn_on(\"scene.bedrrom_on\")\nself.turn_on(\"light.office_1\", color_name = \"green\")\n\n\n\n\nturn_off()\n\n\nThis is a convenience function for the \nhomassistant.turn_off\n function. Like \nhomeassistant.turn_on\n, it is able to turn off pretty much anything in Home Assistant that can be turned off.\n\n\nSynopsis\n\n\nself.turn_off(entity_id)\n\n\n\n\nReturns\n\n\nNone\n\n\nParameters\n\n\nentity_id\n\n\nFully qualified entity_id of the thing to be turned off, e.g. \nlight.office_lamp\n or \nscene.downstairs_on\n.\n\n\nExamples\n\n\nself.turn_off(\"switch.patio_lights\")\nself.turn_off(\"light.office_1\")\n\n\n\n\ntoggle()\n\n\nThis is a convenience function for the \nhomassistant.toggle\n function. It is able to flip the state of pretty much anything in Home Assistant that can be turned on or off.\n\n\nSynopsis\n\n\nself.toggle(entity_id)\n\n\n\n\nReturns\n\n\nNone\n\n\nParameters\n\n\nentity_id\n\n\nFully qualified entity_id of the thing to be toggled, e.g. \nlight.office_lamp\n or \nscene.downstairs_on\n.\n\n\nExamples\n\n\nself.toggle(\"switch.patio_lights\")\nself.toggle(\"light.office_1\", color_name = \"green\")\n\n\n\n\nselect_value()\n\n\nThis is a convenience function for the \ninput_slider.select_value\n function. It is able to set the value of an input_slider in Home Assistant.\n\n\nSynopsis\n\n\nself.select_value(entity_id, value)\n\n\n\n\nReturns\n\n\nNone\n\n\nParameters\n\n\nentity_id\n\n\nFully qualified entity_id of the input_slider to be changed, e.g. \ninput_slider.alarm_hour\n.\n\n\nvalue\n\n\nThe new value to set the input slider to.\n\n\nExamples\n\n\nself.select_value(\"input_slider.alarm_hour\", 6)\n\n\n\n\nselect_option()\n\n\nThis is a convenience function for the \ninput_select.select_option\n function. It is able to set the value of an input_select in Home Assistant.\n\n\nSynopsis\n\n\nself.select_option(entity_id, option)\n\n\n\n\nReturns\n\n\nNone\n\n\nParameters\n\n\nentity_id\n\n\nFully qualified entity_id of the input_select to be changed, e.g. \ninput_select.mode\n.\n\n\nvalue\n\n\nThe new value to set the input slider to.\n\n\nExamples\n\n\nself.select_option(\"input_select.mode\", \"Day\")\n\n\n\n\nnotify()\n\n\nThis is a convenience function for the \nnotify.notify\n service. It will send a notification to a named notification service. If the name is not specified it will default to \nnotify/notify\n.\n\n\nSynopsis\n\n\nnotify(message, **kwargs)\n\n\n\n\nReturns\n\n\nNone\n\n\nParameters\n\n\nmessage\n\n\nMessage to be sent to the notification service.\n\n\ntitle =\n\n\nTitle of the notification - optional.\n\n\nname =\n\n\nName of the notification service - optional.\n\n\nExamples\n\n\nself.notify(\"\", \"Switching mode to Evening\")\nself.notify(\"Switching mode to Evening\", title = \"Some Subject\", name = \"smtp\")\n\n\n\n\nEvents\n\n\nAbout Events\n\n\nEvents are a fundamental part of how Home Assistant works under the covers. HA has an event bus that all components can read and write to, enabling components to inform other components when important events take place. We have already seen how state changes can be propagated to AppDaemon - a state change however is merely an example of an event within Home Assistant. There are several other event types, among them are:\n\n\n\n\nhomeassistant_start\n\n\nhomeassistant_stop\n\n\nstate_changed\n\n\nservice_registered\n\n\ncall_service\n\n\nservice_executed\n\n\nplatform_discovered\n\n\ncomponent_loaded\n\n\n\n\nUsing AppDaemon, it is possible to subscribe to specific events as well as fire off events.\n\n\nIn addition to the Home Assistant supplied events, AppDaemon adds 2 more events. These are internal to AppDaemon and are not visible on the Home Assistant bus:\n\n\n\n\nappd_started\n - fired once when AppDaemon is first started and after Apps are initialized\n\n\nha_started\n - fired every time AppDaemon detects a Home Assistant restart\n\n\n\n\nAbout Event Callbacks\n\n\nAs with State Change and Scheduler callbacks, Event Callbacks expect to call into functions with a known and specific signature and a class defined Scheduler callback function should look like this:\n\n\n  def my_callback(self, event_name, data, kwargs):\n    <do some useful work here>\n\n\n\n\nYou can call the function whatever you like - you will reference it in the Scheduler call, and you can create as many callback functions as you need.\n\n\nThe parameters have the following meanings:\n\n\nself\n\n\nA standard Python object reference.\n\n\nevent_name\n\n\nName of the event that was called, e.g. \ncall_service\n.\n\n\ndata\n\n\nAny data that the system supplied with the event as a dict.\n\n\nkwargs\n\n\nA dictionary containing Zero or more user keyword arguments to be supplied to the callback.\n\n\nlisten_event()\n\n\nListen event sets up a callback for a specific event, or any event.\n\n\nSynopsis\n\n\nhandle = listen_event(function, event = None, **kwargs):\n\n\n\n\nReturns\n\n\nA handle that can be used to cancel the callback.\n\n\nParameters\n\n\nfunction\n\n\nThe function to be called when the event is fired.\n\n\nevent\n\n\nName of the event to subscribe to. Can be a standard Home Assistant event such as \nservice_registered\n or an arbitrary custom event such as \n\"MODE_CHANGE\"\n. If no event is specified, \nlisten_event()\n will subscribe to all events.\n\n\n**kwargs (optional)\n\n\nOne or more keyword value pairs representing App specific parameters to supply to the callback. If the keywords match values within the event data, they will act as filters, meaning that if they don't match the values, the callback will not fire.\n\n\nAs an example of this, a Minimote controller when activated will generate an event called \nzwave.scene_activated\n, along with 2 pieces of data that are specific to the event - \nentity_id\n and \nscene\n. If you include keyword values for either of those, the values supplied to the `listen_event()1 call must match the values in the event or it will not fire. If the keywords do not match any of the data in the event they are simply ignored.\n\n\nFiltering will work with any event type, but it will be necessary to figure out the data associated with the event to understand what values can be filtered on. This can be achieved by examining Home Assistant's logfiles when the event fires.\n\n\nExamples\n\n\nself.listen_event(self.mode_event, \"MODE_CHANGE\")\n# Listen for a minimote event activating scene 3:\nself.listen_event(self.generic_event, \"zwave.scene_activated\", scene_id = 3)\n# Listen for a minimote event activating scene 3 from a specific minimote:\nself.listen_event(self.generic_event, \"zwave.scene_activated\", entity_id = \"minimote_31\", scene_id = 3)\n\n\n\n\ncancel_listen_event()\n\n\nCancels callbacks for a specific event.\n\n\nSynopsis\n\n\ncancel_listen_event(handle)\n\n\n\n\nReturns\n\n\nNone.\n\n\nParameters\n\n\nhandle\n\n\nA handle returned from a previous call to \nlisten_event()\n.\n\n\nExamples\n\n\nself.cancel_listen_event(handle)\n\n\n\n\ninfo_listen_event()\n\n\nGet information on an event callback from it's handle.\n\n\nSynopsis\n\n\nservice, kwargs = self.info_listen_event(handle)\n\n\n\n\nReturns\n\n\nservice, kwargs - the values supplied when the callback was initially created.\n\n\nParameters\n\n\nhandle\n\n\nThe handle returned when the \nlisten_event()\n call was made.\n\n\nExamples\n\n\nservice, kwargs = self.info_listen_event(handle)\n\n\n\n\nfire_event()\n\n\nFire an event on the HomeAssistant bus, for other components to hear.\n\n\nSynopsis\n\n\nfire_event(event, **kwargs)\n\n\n\n\nReturns\n\n\nNone.\n\n\nParameters\n\n\nevent\n\n\nName of the event. Can be a standard Home Assistant event such as \nservice_registered\n or an arbitrary custom event such as \n\"MODE_CHANGE\"\n.\n\n\n**kwargs\n\n\nZero or more keyword arguments that will be supplied as part of the event.\n\n\nExamples\n\n\nself.fire_event(\"MY_CUSTOM_EVENT\", jam=\"true\")\n\n\n\n\nEvent Callback Function Signature\n\n\nFunctions called as an event callback will be supplied with 2 arguments:\n\n\ndef service(self, event_name, data):\n\n\n\n\nevent_name\n\n\nThe name of the event that caused the callback, e.g. \n\"MODE_CHANGE\"\n or \ncall_service\n.\n\n\ndata\n\n\nA dictionary containing any additional information associated with the event.\n\n\nUse of Events for Signalling between Home Assistant and AppDaemon\n\n\nHome Assistant allows for the creation of custom events and existing components can send and receive them. This provides a useful mechanism for signaling back and forth between Home Assistant and AppDaemon. For instance, if you would like to create a UI Element to fire off some code in Home Assistant, all that is necessary is to create a script to fire a custom event, then subscribe to that event in AppDaemon. The script would look something like this:\n\n\nalias: Day\nsequence:\n- event: MODE_CHANGE\n  event_data:\n    mode: Day\n\n\n\n\nThe custom event \nMODE_CHANGE\n would be subscribed to with:\n\n\nself.listen_event(self.mode_event, \"MODE_CHANGE\")\n\n\n\n\nHome Assistant can send these events in a variety of other places - within automations, and also directly from Alexa intents. Home Assistant can also listen for custom events with it's automation component. This can be used to signal from AppDaemon code back to home assistant. Here is a sample automation:\n\n\nautomation:\n  trigger:\n    platform: event\n    event_type: MODE_CHANGE\n    ...\n    ...\n\n\n\n\nThis can be triggered with a call to AppDaemon's fire_event() as follows:\n\n\nself.fire_event(\"MODE_CHANGE\", mode = \"Day\")\n\n\n\n\nPresence\n\n\nPresence in Home Assistant is tracked using Device Trackers. The state of all device trackers can be found using the \nget_state()\n call, however AppDaemon provides several convenience functions to make this easier.\n\n\nget_trackers()\n\n\nReturn a list of all device trackers. This is designed to be iterated over.\n\n\nSynopsis\n\n\ntracker_list = get_trackers()\n\n\n\n\nReturns\n\n\nAn iterable list of all device trackers.\n\n\nExamples\n\n\ntrackers = self.get_trackers()\nfor tracker in trackers:\n    do something\n\n\n\n\nget_tracker_state()\n\n\nGet the state of a tracker. The values returned depend in part on the configuration and type of device trackers in the system. Simpler tracker types like \nLocative\n or \nNMAP\n will return one of 2 states:\n\n\n\n\nhome\n\n\nnot_home\n\n\n\n\nSome types of device tracker are in addition able to supply locations that have been configured as Geofences, in which case the name of that location can be returned.\n\n\nSynopsis\n\n\nlocation = self.get_tracker_state(tracker_id)\n\n\n\n\nReturns\n\n\nA string representing the location of the tracker.\n\n\nParameters\n\n\ntracker_id\n\n\nFully qualified entity_id of the device tracker to query, e.g. \ndevice_tracker.andrew\n.\n\n\nExamples\n\n\ntrackers = self.get_trackers()\nfor tracker in trackers:\n  self.log(\"{} is {}\".format(tracker, self.get_tracker_state(tracker)))\n\n\n\n\neveryone_home()\n\n\nA convenience function to determine if everyone is home. Use this in preference to getting the state of \ngroup.all_devices()\n as it avoids a race condition when using state change callbacks for device trackers.\n\n\nSynopsis\n\n\nresult = self.everyone_home()\n\n\n\n\nReturns\n\n\nReturns \nTrue\n if everyone is at home, \nFalse\n otherwise.\n\n\nExamples\n\n\nif self.everyone_home():\n    do something\n\n\n\n\nanyone_home()\n\n\nA convenience function to determine if one or more person is home. Use this in preference to getting the state of \ngroup.all_devices()\n as it avoids a race condition when using state change callbacks for device trackers.\n\n\nSynopsis\n\n\nresult = self.anyone_home()\n\n\n\n\nReturns\n\n\nReturns \nTrue\n if anyone is at home, \nFalse\n otherwise.\n\n\nExamples\n\n\nif self.anyone_home():\n    do something\n\n\n\n\nnoone_home()\n\n\nA convenience function to determine if no people are at home. Use this in preference to getting the state of group.all_devices() as it avoids a race condition when using state change callbacks for device trackers.\n\n\nSynopsis\n\n\nresult = self.noone_home()\n\n\n\n\nReturns\n\n\nReturns \nTrue\n if no one is home, \nFalse\n otherwise.\n\n\nExamples\n\n\nif self.noone_home():\n    do something\n\n\n\n\nMiscellaneous Helper Functions\n\n\ntime()\n\n\nReturns a python \ntime\n object representing the current time. Use this in preference to the standard Python ways to discover the current time, especially when using the \"Time Travel\" feature for testing.\n\n\nSynopsis\n\n\ntime()\n\n\n\n\nReturns\n\n\nA localised Python time object representing the current AppDaemon time.\n\n\nParameters\n\n\nNone\n\n\nExample\n\n\nnow = self.time()\n\n\n\n\ndate()\n\n\nReturns a python \ndate\n object representing the current date. Use this in preference to the standard Python ways to discover the current date, especially when using the \"Time Travel\" feature for testing.\n\n\nSynopsis\n\n\ndate()\n\n\n\n\nReturns\n\n\nA localised Python time object representing the current AppDaemon date.\n\n\nParameters\n\n\nNone\n\n\nExample\n\n\ntoday = self.date()\n\n\n\n\ndatetime()\n\n\nReturns a python \ndatetime\n object representing the current date and time. Use this in preference to the standard Python ways to discover the current time, especially when using the \"Time Travel\" feature for testing.\n\n\nSynopsis\n\n\ndatetime()\n\n\n\n\nReturns\n\n\nA localised Python datetime object representing the current AppDaemon date and time.\n\n\nParameters\n\n\nNone\n\n\nExample\n\n\nnow = self.datetime()\n\n\n\n\nconvert_utc()\n\n\nHome Assistant provides timestamps of several different sorts that may be used to gain additional insight into state changes. These timestamps are in UTC and are coded as ISO 8601 Combined date and time strings. \nconvert_utc()\n will accept one of these strings and convert it to a localised Python datetime object representing the timestamp\n\n\nSynopsis\n\n\nconvert_utc(utc_string)\n\n\n\n\nReturns\n\n\nconvert_utc(utc_string)\n returns a localised Python datetime object representing the timestamp.\n\n\nParameters\n\n\nutc_string\n\n\nAn ISO 8601 encoded date and time string in the following format: \n2016-07-13T14:24:02.040658-04:00\n\n\nExample\n\n\nparse_time()\n\n\nTakes a string representation of a time, or sunrise or sunset offset and converts it to a \ndatetime.time\n object.\n\n\nSynopsis\n\n\nparse_time(time_string)\n\n\n\n\nReturns\n\n\nA \ndatetime.time\n object, representing the time given in the \ntime_string\n argument.\n\n\nParameters\n\n\ntime_string\n\n\nA representation of the time in a string format with one of the following formats:\n\n\n\n\nHH:MM:SS - the time in Hours Minutes and Seconds, 24 hour format.\n\n\nsunrise|sunset [+|- HH:MM:SS]- time of the next sunrise or sunset with an optional positive or negative offset in Hours Minutes and seconds\n\n\n\n\nExample\n\n\ntime = self.parse_time(\"17:30:00\")\ntime = self.parse_time(\"sunrise\")\ntime = self.parse_time(\"sunset + 00:30:00\")\ntime = self.parse_time(\"sunrise + 01:00:00\")\n\n\n\n\nnow_is_between()\n\n\nTakes two string representations of a time, or sunrise or sunset offset and returns true if the current time is between those 2 times. \nnow_is_between()\n can correctly handle transitions across midnight.\n\n\nSynopsis\n\n\nnow_is_between(start_time_string, end_time_string)\n\n\n\n\nReturns\n\n\nTrue\n if the current time is within the specified start and end times, \nFalse\n otherwise.\n\n\nParameters\n\n\nstart_time_string, end_time_string\n\n\nA representation of the start and end time respectively in a string format with one of the following formats:\n\n\n\n\nHH:MM:SS - the time in Hours Minutes and Seconds, 24 hour format.\n\n\nsunrise\n|\nsunset\n [+|- HH:MM:SS]- time of the next sunrise or sunset with an optional positive or negative offset in Hours Minutes and seconds\n\n\n\n\nExample\n\n\nif self.now_is_between(\"17:30:00\", \"08:00:00\"):\n    do something\nif self.now_is_between(\"sunset - 00:45:00\", \"sunrise + 00:45:00\"):\n    do something\n\n\n\n\nfriendly_name()\n\n\nfrindly_name()\n will return the Friendly Name of an entity if it has one.\n\n\nSynopsis\n\n\nName = self.friendly_name(entity_id)\n\n\n\n\nReturns\n\n\nThe friendly name of the entity if it exists or the entity id if not.\n\n\nExample\n\n\ntracker = \"device_tracker.andrew\"\nself.log(\"{}  ({}) is {}\".format(tracker, self.friendly_name(tracker), self.get_tracker_state(tracker)))\n\n\n\n\nsplit_entity()\n\n\nsplit_entity()\n will take a fully qualified entity id of the form \nlight.hall_light\n and split it into 2 values, the device and the entity, e.g. \nlight\n and \nhall_light\n.\n\n\nSynopsis\n\n\ndevice, entity = self.split_entity(entity_id)\n\n\n\n\nParameters\n\n\nentity_id\n\n\nFully qualified entity id to be split.\n\n\nReturns\n\n\nA list with 2 entries, the device and entity respectively.\n\n\nExample\n\n\ndevice, entity = self.split_entity(entity_id)\nif device == \"scene\":\n    do something specific to scenes\n\n\n\n\nentity_exists()\n\n\nSynopsis\n\n\nentity_exists(entity)\n\n\n\n\nentity_exists()\n is used to verify if a given entity exists in Home Assistant or not.\n\n\nReturns\n\n\nentity_exists()\n returns \nTrue\n if the entity exists, \nFalse\n otherwise.\n\n\nParameters\n\n\nentity\n\n\nThe fully qualified name of the entity to check for (including the device type)\n\n\nExamples\n\n\n# Return state for the entire system\nif self.entity_exists(\"light.living_room\"):\n  do something \n  ...\n\n\n\n\nget_app()\n\n\nget_app()\n will return the instantiated object of another app running within the system. This is useful for calling functions or accessing variables that reside in different apps without requiring duplication of code.\n\n\nSynopsis\n\n\nget_app(self, name)\n\n\n\n\nParameters\n\n\nname\n\n\nName of the app required. This is the name specified in header section of the config file, not the module or class.\n\n\nReturns\n\n\nAn object reference to the class.\n\n\nExample\n\n\nMyApp = self.get_app(\"MotionLights\")\nMyApp.turn_light_on()\n\n\n\n\nsplit_device_list()\n\n\nsplit_device_list()\n will take a comma separated list of device types (or anything else for that matter) and return them as an iterable list. This is intended to assist in use cases where the App takes a list of entities from an argument, e.g. a list of sensors to monitor. If only one entry is provided, an iterable list will still be returned to avoid the need for special processing.\n\n\nSynopsis\n\n\ndevices = split_device_list(list)\n\n\n\n\nReturns\n\n\nA list of split devices with 1 or more entries.\n\n\nExample\n\n\nfor sensor in self.split_device_list(self.args[\"sensors\"]):\n    do something for each sensor, e.g. make a state subscription\n\n\n\n\nWriting to Logfiles\n\n\nAppDaemon uses 2 separate logs - the general log and the error log. An AppDaemon App can write to either of these using the supplied convenience methods \nlog()\n and \nerror()\n, which are provided as part of parent \nAppDaemon\n class, and the call will automatically pre-pend the name of the App making the call. The \n-D\n option of AppDaemon can be used to specify what level of logging is required and the logger objects will work as expected.\n\n\nApDaemon loggin also allows you to use placeholders for the module, fucntion and line number. If you include the following in the test of your message:\n\n\n__function__\n__module__\n__line__\n\n\n\n\nThey will automatically be expanded to the appropriate values in the log message.\n\n\nlog()\n\n\nSynopsis\n\n\nlog(message, level = \"INFO\")\n\n\n\n\nReturns\n\n\nNothing\n\n\nParameters\n\n\nMessage\n\n\nThe message to log.\n\n\nlevel\n\n\nThe log level of the message - takes a string representing the standard logger levels.\n\n\nExamples\n\n\nself.log(\"Log Test: Parameter is {}\".format(some_variable))\nself.log(\"Log Test: Parameter is {}\".format(some_variable), level = \"ERROR\")\nself.log(\"Line: __line__, module: __module__, function: __function__, Message: Something bad happened\")```\n\n### error()\n\n#### Synopsis\n\n```python\nerror(message, level = \"WARNING\")\n\n\n\n\nReturns\n\n\nNothing\n\n\nParameters\n\n\nMessage\n\n\nThe message to log.\n\n\nlevel\n\n\nThe log level of the message - takes a string representing the standard logger levels.\n\n\nExamples\n\n\nself.error(\"Some Warning string\")\nself.error(\"Some Critical string\", level = \"CRITICAL\")\n\n\n\n\nGetting Information in Apps and Sharing information between Apps\n\n\nSharing information between different Apps is very simple if required. Each app gets access to a global dictionary stored in a class attribute called \nself.global_vars\n. Any App can add or read any key as required. This operation is not however threadsafe so some care is needed.\n\n\nIn addition, Apps have access to the entire configuration if required, meaning they can access AppDaemon configuration items as well as parameters from other Apps. To use this, there is a class attribute called \nself.config\n. It contains a \nConfigParser\n object, which is similar in operation to a \nDictionary\n. To access any apps parameters, simply reference the ConfigParser object using the Apps name (form the config file) as the first key, and the parameter required as the second, for instance:\n\n\nother_apps_arg = self.config[\"some_app\"][\"some_parameter\"].\n\n\n\n\nTo get AppDaemon's config parameters, use the key \"AppDaemon\", e.g.:\n\n\napp_timezone = self.config[\"AppDaemon\"][\"time_zone\"]\n\n\n\n\nAppDaemon also exposes configuration from Home Assistant such as the Latitude and Longitude configured in HA. All of the information available from the Home Assistant \n/api/config\n endpoint is available in the \nself.ha_config\n dictionary. E.g.:\n\n\nself.log(\"My current position is {}(Lat), {}(Long)\".format(self.ha_config[\"latitude\"], self.ha_config[\"longitude\"]))\n\n\n\n\nAnd finally, it is also possible to use the AppDaemon as a global area for sharing parameters across Apps. Simply add the required parameters to the AppDaemon section of your config:\n\n\n[AppDaemon]\nha_url = <some url>\nha_key = <some key>\n...\nglobal_var = hello world\n\n\n\n\nThen access it as follows:\n\n\nmy_global_var = conf.config[\"AppDaemon\"][\"global_var\"]\n\n\n\n\nDevelopment Workflow\n\n\nDeveloping Apps is intended to be fairly simple but is an exercise in programming like any other kind of Python programming. As such, it is expected that apps will contain syntax errors and will generate exceptions during the development process. AppDaemon makes it very easy to iterate through the development process as it will automatically reload code that has changed and also will reload code if any of the parameters in the configuration file change as well.\n\n\nThe recommended workflow for development is as follows:\n\n\n\n\nOpen a window and tail the \nappdaemon.log\n file\n\n\nOpen a second window and tail the \nerror.log\n file\n\n\nOpen a third window or the editor of your choice for editing the App\n\n\n\n\nWith this setup, you will see that every time you write the file, AppDaemon will log the fact and let you know it has reloaded the App in the \nappdaemon.log\n file.\n\n\nIf there is an error in the compilation or a runtime error, this will be directed to the \nerror.log\n file to enable you to see the error and correct it. When an error occurs, there will also be a warning message in \nappdaemon.log\n to tell you to check the error log.\n\n\nTime Travel\n\n\nOK, time travel sadly isn't really possible but it can be very useful when testing Apps. For instance, imagine you have an App that turns a light on every day at sunset. It might be nice to test it without waiting for Sunset - and with AppDaemon's \"Time Travel\" features you can.\n\n\nChoosing a Start Time\n\n\nInternally, AppDaemon keeps track of it's own time relative to when it was started. This make is possible to start AppDaemon with a different start time and date to the current time. For instance to test that sunset App, start AppDaemon at a time just before sunset and see if it works as expected. To do this, simply use the \"-s\" argument on AppDaemon's command line. e,g,:\n\n\n$ appdaemon -s \"2016-06-06 19:16:00\"\n2016-09-06 17:16:00 INFO AppDaemon Version 1.3.2 starting\n2016-09-06 17:16:00 INFO Got initial state\n2016-09-06 17:16:00 INFO Loading Module: /export/hass/appdaemon_test/conf/test_apps/sunset.py\n...\n\n\n\n\nNote the timestamps in the log - AppDaemon believes it is now just before sunset and will process any callbacks appropriately.\n\n\nSpeeding things up\n\n\nSome Apps need to run for periods of a day or two for you to test all aspects. This can be time consuming, but Time Travel can also help here in two ways. The first is by speeding up time. To do this, simply use the \n-t\n option on the command line. This specifies the amount of time a second lasts while time travelling. The default of course is 1 second, but if you change it to \n0.1\n for instance,m AppDaemon will work 10x faster. If you set it to \n0\n, AppDaemon will work as fast as possible and, depending in your hardware, may be able to get through an entire day in a matter of minutes. Bear in mindo however, due to the threaded nature of AppDaemon, when you are running with \n-t 0\n you may see avctual events firing a little later than expected as the rest of the system tries to keep up with the timer. To set the tick time, start AppDaemon as follows:\n\n\n$ appdaemon -t 0.1\n\n\n\n\nAppDaemon also has an interval flag - think of this as a second multiplier. If the flag is set to 3600 for instance, each tick of the scheduler will jump the time forward by an hour. This is good for covering vast amounts of time quickly but event firing accuracy will suffer as a result. For example:\n\n\n$ appdaemon -e 3600\n\n\n\n\nAutomatically stopping\n\n\nAppDaemon can be set to terminate automatically at a specific time. This can be useful if you want to repeatedly rerun a test, for example to test that random values are behaving as expected. Simply specify the end time with the \n-e\n flag as follows:\n\n\n$ appdaemon -e \"2016-06-06 10:10:00\"\n2016-09-06 17:16:00 INFO AppDaemon Version 1.3.2 starting\n2016-09-06 17:16:00 INFO Got initial state\n2016-09-06 17:16:00 INFO Loading Module: /export/hass/appdaemon_test/conf/test_apps/sunset.py\n...\n\n\n\nThe `-e` flag is most useful when used in conjuntion with the -s flag and optionally the `-t` flag. For example, to run from just before sunset, for an hour, as fast as possible:\n\n```bash\n$ appdaemon -s \"2016-06-06 19:16:00\" -s \"2016-06-06 20:16:00\" -t 0\n\n\n\n\nA Note On Times\n\n\nSome Apps you write may depend on checking times of events relative to the current time. If you are time travelling this will not work if you use standard python library calls to get the current time and date etc. For this reason, always use the AppDamon supplied \ntime()\n, \ndate()\n and \ndatetime()\n calls, documented earlier. These calls will consult with AppDaemon's internal time rather than the actual time and give you the correct values.",
+            "title": "Home"
+        },
+        {
+            "location": "/#appdaemon-api-documentation",
+            "text": "AppDaemon is a loosely coupled, sandboxed, multi-threaded Python execution environment for writing automation apps for  Home Assistant  home automation software. It is intended to complement the Automation and Script components that Home Assistant currently offers.",
+            "title": "AppDaemon API Documentation"
+        },
+        {
+            "location": "/#anatomy-of-an-app",
+            "text": "Automations in AppDaemon are performed by creating a piece of code (essentially a Python Class) and then instantiating it as an Object one or more times by configuring it as an App in the configuration file. The App is given a chance to register itself for whatever events it wants to subscribe to, and AppDaemon will then make calls back into the Object's code when those events occur, allowing the App to respond to the event with some kind of action.  The first step is to create a unique file within the apps directory (as defined in the  [AppDaemon]  section of configuration file - see  README  for further information on the configuration of AppDaemon itself). This file is in fact a Python module, and is expected to contain one or more classes derived from the supplied  AppDaemon  class, imported from the supplied  appdaemon.appapi  module. The start of an app might look like this:  import appdaemon.appapi as appapi\n\nclass MotionLights(appapi.AppDaemon):  When configured as an app in the config file (more on that later) the lifecycle of the App begins. It will be instantiated as an object by AppDaemon, and immediately, it will have a call made to it's  initialize()  function - this function must appear as part of every app:    def initialize(self):\n  ```\n\nThe initialize function allows the app to register any callbacks it might need for responding to state changes, and also any setup activities. When the `initialize()` function returns, the App will be dormant until any of it's callbacks are activated.\n\nThere are several circumstances under which `initialize()` might be called:\n\n- Initial start of AppDaemon\n- Following a change to the Class code\n- Following a change to the module parameters\n- Following initial configuration of an app\n- Following a change in the status of Daylight Savings Time\n- Following a restart of Home Assistant\n\nIn every case, the App is responsible for recreating any state it might need as if it were the first time it was ever started. If `initialize()` is called, the app can safely assume that it is either being loaded for the first time, or that all callbacks and timers have been cancelled. In either case, the APP will need to recreate them. Depending upon the application it may be desirable for the App to establish state such as whether or not a particular light is on, within the `initialize()` function to ensure that everything is as expected or to make immediate remedial action (e.g. turn off a light that might have been left on by mistake when the app was restarted).\n\nAfter the `initialize()` function is in place, the rest of the app consists of functions that are called by the various callback mechanisms, and any additional functions the user wants to add as part of the program logic. Apps are able to subscribe to 2 main classes of events:\n\n- Scheduled Events\n- State Change Events\n\nThese, along with their various subscription calls and helper functions, will be described in detail in later sections.\n\nOptionally, a class can add a `terminate()` function. This function will be called ahead of the reload to allow the class to perform any tidy up that is necessary. \n\nWARNING: Unlike other types of callback, calls to `initialize() and `terminate()` are synchronous to AppDaemon's management code to ensure that initialization or cleanup is completed before the App is loaded or reloaded. This means that any significant delays in the `terminate()` code could have the effect of hanging AppDaemon for the duration of that code - this should be avoided.\n\nTo wrap up this section, here is a complete functioning App (with comments):\n\n```python\nimport appdaemon.appapi as appapi\nimport datetime\n\n# Declare Class\nclass NightLight(appapi.AppDaemon):\n  #initialize() function which will be called at startup and reload\n  def initialize(self):\n    # Create a time object for 7pm\n    time = datetime.time(19, 00, 0)\n    # Schedule a daily callback that will call run_daily() at 7pm every night\n    self.run_daily(self.run_daily_callback, time)\n\n   # Our callback function will be called by the scheduler every day at 7pm\n  def run_daily_callback(self, kwargs):\n    # Call to Home Assistant to turn the porch light on\n    self.turn_on(\"light.porch\")  To summarize - an App's lifecycle consists of being initialized, which allows it to set one or more state and/or schedule callbacks. When those callbacks are activated, the App will typically use one of the Service Calling calls to effect some change to the devices of the system and then wait for the next relevant state change. Finally, if the App is reloaded, there is a call to its  terminate()  function if it exists. That's all there is to it!",
+            "title": "Anatomy of an App"
+        },
+        {
+            "location": "/#about-the-api",
+            "text": "The implementation of the API is located in the AppDaemon class that Apps are derived from. The code for the functions is therefore available to the App simply by invoking the name of the function from the object namespace using the  self  keyword, as in the above examples.  self.turn_on()  for example is just a method defined in the parent class and made available to the child. This design decision was made to simplify some of the implementation and hide passing of unnecessary variables during the API invocation.",
+            "title": "About the API"
+        },
+        {
+            "location": "/#configuration-of-apps",
+            "text": "Apps are configured by specifying new sections in the configuration file.  [AppDaemon]  is a reserved section, described in the  README  for configuration of AppDaemon itself. The name of the section is the name the App is referred to within the system in log files etc. and must be unique.  To configure a new App you need a minimum of two directives:   module  - the name of the module (without the  .py ) that contains the class to be used for this App  class  - the name of the class as defined within the module for the APPs code   Although the section/App name must be unique, it is possible to re-use a class as many times as you want, and conversely to put as many classes in a module as you want. A sample definition for a new App might look as follows:  [newapp]\nmodule = new\nclass = NewApp  When AppDaemon sees the following configuration it will expect to find a class called  NewApp  defined in a module called  new.py  in the apps subdirectory. Apps can be placed at the root of the Apps directory or within a subdirectory, an arbitrary depth down - wherever the App is, as long as it is in some subdirectory of the Apps dir, or in the Apps dir itself, AppDaemon will find it. There is no need to include information about the path, just the name of the file itself (without the  .py ) is sufficient. If names in the subdirectories overlap, AppDir will pick one of them but the exact choice it will make is undefined.  When starting the system for the first time or when reloading an App or Module, the system will log the fact in it's main log. It is often the case that there is a problem with the class, maybe a syntax error or some other problem. If that is the case, details will be output to the error log allowing the user to remedy the problem and reload.",
+            "title": "Configuration of Apps"
+        },
+        {
+            "location": "/#steps-to-writing-an-app",
+            "text": "Create the code in a new or shared module by deriving a class from AppDaemon, add required callbacks and code  Add the App to the configuration file  There is no number 3",
+            "title": "Steps to writing an App"
+        },
+        {
+            "location": "/#reloading-modules-and-classes",
+            "text": "Reloading of modules is automatic. When the system spots a change in a module, it will automatically reload and recompile the module. It will also figure out which Apps were using that Module and restart them, causing their  terminate()  functions to be called if they exist, all of their existing callbacks to be cleared, and their  initialize()  function to be called.  The same is true if changes are made to an App's configuration - changing the class, or arguments (see later) will cause that app to be reloaded in the same way. The system is also capable of detecting if a new app has been added, or if one has been removed, and it will act appropriately, starting the new app immediately and removing all callbacks for the removed app.  The suggested order for creating a new App is to add the module code first and work until it compiles cleanly, and only then add an entry in the configuration file to actually run it. A good workflow is to continuously monitor the error file (using  tail -f  on Linux for instance) to ensure that errors are seen and can be remedied.",
+            "title": "Reloading Modules and Classes"
+        },
+        {
+            "location": "/#passing-arguments-to-apps",
+            "text": "There wouldn't be much point in being able to run multiple versions of an App if there wasn't some way to instruct them to do something different. For this reason it is possible to pass any required arguments to an App, which are then made available to the object at runtime. The arguments themselves can be called anything (apart from  module  or  class ) and are simply added into the section after the 2 mandatory directives like so:  [MyApp]\nmodule = myapp\nclass = MyApp\nparam1 = spam\nparam2 = eggs  Within the Apps code, the 2 parameters (as well as the module and class) are available as a dictionary called  args , and accessed as follows:  param1 = self.args[\"param1\"]\nparam2 = self.args[\"param2\"]  A use case for this might be an App that detects motion and turns on a light. If you have 3 places you want to run this, rather than hardcoding this into 3 separate Apps, you need only code a single app and instantiate it 3 times with different arguments. It might look something like this:  [downstairs_motion_light]\nmodule = motion_light\nclass = MotionLight\nsensor = binary_sensor.downstairs_hall\nlight = light.downstairs_hall\n[upstairs_motion_light]\nmodule = motion_light\nclass = MotionLight\nsensor = binary_sensor.upstairs_hall\nlight = light.upstairs_hall\n[garage_motion_light]\nmodule = motion_light\nclass = MotionLight\nsensor = binary_sensor.garage\nlight = light.garage",
+            "title": "Passing Arguments to Apps"
+        },
+        {
+            "location": "/#module-dependencies",
+            "text": "It is possible for modules to be dependant upon other modules. Some examples where this might be the case are:   A Global module that defines constants for use in other modules  A module that provides a service for other modules, e.g. a TTS module  A Module that provides part of an object hierarchy to other modules   In these cases, when changes are made to one of these modules, we also want the modules that depend upon them to be reloaded. Furthermore, we also want to guarantee that they are loaded in order so that the modules dpended upon by other modules are loaded first.  AppDaemon fully supports this through the use of the dependency directive in the App configuration. Using this directice, each App identifies modules that it depends upon. Note that the dependency is at the module level, not the App level, since a change to the module will force a reload of all apps using it anyway. The dependency directive will identify the module name of the App it cares about, and AppDaemon will see to it that the dependency is loaded before the module depending on it, and that the dependent module will be reloaded if it changes.   For example, an App  Consumer , uses another app  Sound  to play sound files.  Sound  in turn uses  Global  to store some global values. We can represent these dependencies as follows:  [Global]\nmodule = global\nclass = Global\n\n[Sound]\nmodule = sound\nclass = Sound\ndependencies = global # Note - module name not App name\n\n[Consumer]\nmodule = sound\nclass = Sound\ndependencies = sound  It is also possible to have multiple dependencies, added as a comma separate list (no spaces)  [Consumer]\nmodule = sound\nclass = Sound\ndependencies = sound,global  AppDaemon will write errors to the log if a dependency is missing and it should also detect circular dependencies.",
+            "title": "Module Dependencies"
+        },
+        {
+            "location": "/#callback-constraints",
+            "text": "Callback constraints are a feature of AppDaemon that removes the need for repetition of some common coding checks. Many Apps will wish to process their callbacks only when certain conditions are met, e.g. someone is home, and it's after sunset. These kinds of conditions crop up a lot, and use of callback constraints can significantly simplify the logic required within callbacks.  Put simply, callback constraints are one or more conditions on callback execution that can be applied to an individual App. An App's callbacks will only be executed if all of the constraints are met. If a constraint is absent it will not be checked for.  For example, the presence callback constraint can be added to an App by adding a parameter to it's configuration like this:  [some_app]\nmodule = some_module\nclass = SomeClass\nconstrain_presence = noone  Now, although the  initialize()  function will be called for SomeClass, and it will have a chance to register as many callbacks as it desires, none of the callbacks will execute, in this case, until everyone has left. This could be useful for an interior motion detector App for instance. There are several different types of constraints:   input_boolean  input_select  presence  time   An App can have as many or as few as are required. When more than one constraint is present, they must all evaluate to true to allow the callbacks to be called. Constraints becoming true are not an event in their own right, but if they are all true at a point in time, the next callback that would otherwise been blocked due to constraint failure will now be called. Similarly, if one of the constraints becomes false, the next callback that would otherwise have been called will be blocked.  They are described individually below.",
+            "title": "Callback Constraints"
+        },
+        {
+            "location": "/#input_boolean",
+            "text": "By default, the input_boolean constraint prevents callbacks unless the specified input_boolean is set to \"on\". This is useful to allow certain Apps to be turned on and off from the user interface. For example:  [some_app]\nmodule = some_module\nclass = SomeClass\nconstrain_input_boolean = input_boolean.enable_motion_detection  If you want to reverse the logic so the constraint is only called when the input_boolean is off, use the optional state parameter by appending \",off\" to the argument, e.g.:  [some_app]\nmodule = some_module\nclass = SomeClass\nconstrain_input_boolean = input_boolean.enable_motion_detection,off",
+            "title": "input_boolean"
+        },
+        {
+            "location": "/#input_select",
+            "text": "The input_select constraint prevents callbacks unless the specified input_select is set to one or more of the nominated (comma separated) values. This is useful to allow certain Apps to be turned on and off according to some flag, e.g. a house mode flag.  # Single value\nconstrain_input_select = input_select.house_mode,Day\n# or multiple values\nconstrain_input_select = input_select.house_mode,Day,Evening,Night",
+            "title": "input_select"
+        },
+        {
+            "location": "/#presence",
+            "text": "The presence constraint will constrain based on presence of device trackers. It takes 3 possible values:\n-  noone  - only allow callback execution when no one is home\n-  anyone  - only allow callback execution when one or more person is home\n-  everyone  - only allow callback execution when everyone is home  constrain_presence = anyone\n# or\nconstrain_presence = someone\n# or\nconstrain_presence = noone",
+            "title": "presence"
+        },
+        {
+            "location": "/#time",
+            "text": "The time constraint consists of 2 variables,  constrain_start_time  and  constrain_end_time . Callbacks will only be executed if the current time is between the start and end times.\n- If both are absent no time constraint will exist\n- If only start is present, end will default to 1 second before midnight\n- If only end is present, start will default to midnight  The times are specified in a string format with one of the following formats:\n- HH:MM:SS - the time in Hours Minutes and Seconds, 24 hour format.\n-  sunrise | sunset  [+|- HH:MM:SS]- time of the next sunrise or sunset with an optional positive or negative offset in Hours Minutes and seconds  The time based constraint system correctly interprets start and end times that span midnight.  # Run between 8am and 10pm\nconstrain_start_time = 08:00:00\nconstrain_end_time = 22:00:00\n# Run between sunrise and sunset\nconstrain_start_time = sunrise\nconstrain_end_time = sunset\n# Run between 45 minutes before sunset and 45 minutes after sunrise the next day\nconstrain_start_time = sunset - 00:45:00\nconstrain_end_time = sunrise + 00:45:00",
+            "title": "time"
+        },
+        {
+            "location": "/#days",
+            "text": "The day constraint consists of as list of days for which the callbacks will fire, e.g.  constrain_days = mon,tue,wed  Callback constraints can also be applied to individual callbacks within Apps, see later for more details.",
+            "title": "days"
+        },
+        {
+            "location": "/#a-note-on-threading",
+            "text": "AppDaemon is multithreaded. This means that any time code within an App is executed, it is executed by one of many threads. This is generally not a particularly important consideration for this application; in general, the execution time of callbacks is expected to be far quicker than the frequency of events causing them. However, it should be noted for completeness, that it is certainly possible for different pieces of code within the App to be executed concurrently, so some care may be necessary if different callback for instance inspect and change shared variables. This is a fairly standard caveat with concurrent programming, and if you know enough to want to do this, then you should know enough to put appropriate safeguards in place. For the average user however this shouldn't be an issue. If there are sufficient use cases to warrant it, I will consider adding locking to the function invocations to make the entire infrastructure threadsafe, but I am not convinced that it is necessary.  An additional caveat of a threaded worker pool environment is that it is the expectation that none of the callbacks tie threads up for a significant amount of time. To do so would eventually lead to thread exhaustion, which would make the system run behind events. No events would be lost as they would be queued, but callbacks would be delayed which is a bad thing.  Given the above, NEVER use Python's  time.sleep()  if you want to perform an operation some time in the future, as this will tie up a thread for the period of the sleep. Instead use the scheduler's  run_in()  function which will allow you to delay without blocking any threads.",
+            "title": "A Note on Threading"
+        },
+        {
+            "location": "/#state-operations",
+            "text": "",
+            "title": "State Operations"
+        },
+        {
+            "location": "/#a-note-on-home-assistant-state",
+            "text": "State within Home Assistant is stored as a collection of dictionaries, one for each entity. Each entity's dictionary will have some common fields and a number of entity type specific fields The state for an entity will always have the attributes:   last_updated  last_changed  state   Any other attributes such as brightness for a lamp will only be present if the entity supports them, and will be stored in a sub-dictionary called  attributes . When specifying these optional attributes in the  get_state()  call, no special distinction is required between the main attributes and the optional ones -  get_state()  will figure it out for you.  Also bear in mind that some attributes such as brightness for a light, will not be present when the light is off.  In most cases, the attribute  state  has the most important value in it, e.g. for a light or switch this will be  on  or  off , for a sensor it will be the value of that sensor. Many of the AppDaemon API calls and callbacks will implicitly return the value of state unless told to do otherwise.",
+            "title": "A note on Home Assistant State"
+        },
+        {
+            "location": "/#get_state",
+            "text": "",
+            "title": "get_state()"
+        },
+        {
+            "location": "/#synopsis",
+            "text": "get_state(entity = None, attribute = None)  get_state()  is used to query the state of any component within Home Assistant. State updates are continuously tracked so this call runs locally and does not require AppDaemon to call back to Home Assistant and as such is very efficient.",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns",
+            "text": "get_state()  returns a  dictionary  or single value, the structure of which varies according to the parameters used. If an entity or attribute does not exist,  get_state()  will return  None .",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters",
+            "text": "All parameters are optional, and if  get_state()  is called with no parameters it will return the entire state of Home Assistant at that given time. This will consist of a dictionary with a key for each entity. Under that key will be the standard entity state information.",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#entity",
+            "text": "This is the name of an entity or device type. If just a device type is provided, e.g.  light  or  binary_sensor ,  get_state()  will return a dictionary of all devices of that type, indexed by the entity_id, containing all the state for each entity.  If a fully qualified  entity_id  is provided,  get_state()  will return the state attribute for that entity, e.g.  on  or  off  for a light.",
+            "title": "entity"
+        },
+        {
+            "location": "/#attribute",
+            "text": "Name of an attribute within the entity state object. If this parameter is specified in addition to a fully qualified  entity_id , a single value representing the attribute will be returned, or  None  if it is not present.  The value  all  for attribute has special significance and will return the entire state dictionary for the specified entity rather than an individual attribute value.",
+            "title": "attribute"
+        },
+        {
+            "location": "/#examples",
+            "text": "# Return state for the entire system\nstate = self.get_state()\n\n# Return state for all switches in the system\nstate = self.get_state(\"switch\")\n\n# Return the state attribute for light.office_1\nstate = self.get_state(\"light.office_1\")\n\n# Return the brightness attribute for light.office_1\nstate = self.get_state(\"light.office_1\", \"brightness\")\n\n# Return the entire state for light.office_1\nstate = self.get_state(\"light.office_1\", \"all\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#set_state",
+            "text": "set_state()  will make a call back to Home Assistant and make changes to the internal state of Home Assistant. This is not something that you would usually want to do and the applications are limited however the call is included for completeness. Note that for instance, setting the state of a light to  on  won't actually switch the device on, it will merely change the state of the device in Home Assistant so that it no longer reflects reality. In most cases, the state will be corrected the next time Home Assistant polls the device or someone causes a state change manually. To effect actual changes of devices use one of the service call functions.  One possible use case for  set_state()  is for testing. If for instance you are writing an App to turn on a light when it gets dark according to a luminance sensor, you can use  set_state()  to temporarily change the light level reported by the sensor to test your program. However this is also possible using the developer tools.  At the time of writing, it appears that no checking is done as to whether or not the entity exists, so it is possible to add entirely new entries to Home Assistant's state with this call.",
+            "title": "set_state()"
+        },
+        {
+            "location": "/#synopsis_1",
+            "text": "set_state(entity_id, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_1",
+            "text": "set_state()  returns a dictionary representing the state of the device after the call has completed.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_1",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#entity_id",
+            "text": "Entity id for which the state is to be set, e.g.  light.office_1 .",
+            "title": "entity_id"
+        },
+        {
+            "location": "/#values",
+            "text": "A list of keyword values to be changed or added to the entities state. e.g.  state = \"off\" . Note that any optional attributes such as colors for bulbs etc, need to reside in a dictionary called  attributes ; see the example.",
+            "title": "values"
+        },
+        {
+            "location": "/#examples_1",
+            "text": "status = self.set_state(\"light.office_1\", state = \"on\", attributes = {\"color_name\": \"red\"})",
+            "title": "Examples"
+        },
+        {
+            "location": "/#about-callbacks",
+            "text": "A large proportion of home automation revolves around waiting for something to happen and then reacting to it; a light level drops, the sun rises, a door opens etc. Home Assistant keeps track of every state change that occurs within the system and streams that information to AppDaemon almost immediately.  An individual App however usually doesn't care about the majority of state changes going on in the system; Apps usually care about something very specific, like a specific sensor or light. Apps need a way to be notified when a state change happens that they care about, and be able to ignore the rest. They do this through registering callbacks. A callback allows the App to describe exactly what it is interested in, and tells AppDaemon to make a call into its code in a specific place to be able to react to it - this is a very familiar concept to anyone familiar with event-based programming.  There are 3 types of callbacks within AppDaemon:   State Callbacks - react to a change in state  Scheduler Callbacks - react to a specific time or interval  Event Callbacks - react to specific Home Assistant and Appdaemon events.   All callbacks allow the user to specify additional parameters to be handed to the callback via the standard Python  **kwargs  mechanism for greater flexibility, these additional arguments are handed to the callback as a standard Python dictionary,",
+            "title": "About Callbacks"
+        },
+        {
+            "location": "/#about-registering-callbacks",
+            "text": "Each of the various types of callback have their own function or functions for registering the callback:   listen_state()  for state callbacks  Various scheduler calls such as  run_once()  for scheduler callbacks  listen_event()  for event callbacks.   Each type of callback shares a number of common mechanisms that increase flexibility.",
+            "title": "About Registering Callbacks"
+        },
+        {
+            "location": "/#callback-level-constraints",
+            "text": "When registering a callback, you can add constraints identical to the Application level constraints described earlier. The difference is that a constraint applied to an individual callback only affects that callback and no other. The constraints are applied by adding Python keyword-value style arguments after the positional arguments. The parameters themselves are named identically to the previously described constraints and have identical functionality. For instance, adding:  constrain_presence=\"everyone\"  to a callback registration will ensure that the callback is only run if the callback conditions are met and in addition everyone is present although any other callbacks might run whenever their event fires if they have no constraints.  For example:  self.listen_state(self.motion, \"binary_sensor.drive\", constrain_presence=\"everyone\")",
+            "title": "Callback Level Constraints"
+        },
+        {
+            "location": "/#user-arguments",
+            "text": "Any callback has the ability to allow the App creator to pass through arbitrary keyword arguments that will be presented to the callback when it is run. The arguments are added after the positional parameters just like the constraints. The only restriction is that they cannot be the same as any constraint name for obvious reasons. For example, to pass the parameter  arg1 = \"home assistant\"  through to a callback you would register a callback as follows:  self.listen_state(self.motion, \"binary_sensor.drive\", arg1=\"home assistant\")  Then in the callback it is presented back to the function as a dictionary and you could use it as follows:  def motion(self, entity, attribute, old, new, kwargs):\n    self.log(\"Arg1 is {}\".format(kwargs[\"arg1\"]))",
+            "title": "User Arguments"
+        },
+        {
+            "location": "/#state-callbacks",
+            "text": "AppDaemons's state callbacks allow an App to listen to a wide variety of events, from every state change in the system, right down to a change of a single attribute of a particular entity. Setting up a callback is done using a single API call  listen_state()  which takes various arguments to allow it to do all of the above. Apps can register as many or as few callbacks as they want.",
+            "title": "State Callbacks"
+        },
+        {
+            "location": "/#about-state-callback-functions",
+            "text": "When calling back into the App, the App must provide a class function with a known signature for AppDaemon to call. The callback will provide various information to the function to enable the function to respond appropriately. For state callbacks, a class defined callback function should look like this:    def my_callback(self, entity, attribute, old, new, kwargs):\n    <do some useful work here>  You can call the function whatever you like - you will reference it in the  listen_state()  call, and you can create as many callback functions as you need.  The parameters have the following meanings:",
+            "title": "About State Callback Functions"
+        },
+        {
+            "location": "/#self",
+            "text": "A standard Python object reference.",
+            "title": "self"
+        },
+        {
+            "location": "/#entity_1",
+            "text": "Name of the entity the callback was requested for or  None .",
+            "title": "entity"
+        },
+        {
+            "location": "/#attribute_1",
+            "text": "Name of the attribute the callback was requested for or  None .",
+            "title": "attribute"
+        },
+        {
+            "location": "/#old",
+            "text": "The value of the state before the state change.",
+            "title": "old"
+        },
+        {
+            "location": "/#new",
+            "text": "The value of the state after the state change.  old  and  new  will have varying types depending on the type of callback.",
+            "title": "new"
+        },
+        {
+            "location": "/#4242kwargs",
+            "text": "A dictionary containing any constraints and/or additional user specific keyword arguments supplied to the  listen_state()  call.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#listen_state",
+            "text": "listen_state()  allows the user to register a callback for a wide variety of state changes.",
+            "title": "listen_state()"
+        },
+        {
+            "location": "/#synopsis_2",
+            "text": "handle = listen_state(callback, entity = None, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_2",
+            "text": "A unique identifier that can be used to cancel the callback if required. Since variables created within object methods are local to the function they are created in, and in all likelihood the cancellation will be invoked later in a different function, it is recommended that handles are stored in the object namespace, e.g.  self.handle .",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_2",
+            "text": "All parameters except  callback  are optional, and if  listen_state()  is called with no additional parameters it will subscribe to any state change within Home Assistant.",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard State Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#entity_2",
+            "text": "This is the name of an entity or device type. If just a device type is provided, e.g.  light  or  binary_sensor ,  listen_state()  will subscribe to state changes of all devices of that type. If a fully qualified  entity_id  is provided,  listen_state()  will listen for state changes for just that entity.  When called, AppDaemon will supply the callback function, in old and new, with the state attribute for that entity, e.g.  on  or  off  for a light.",
+            "title": "entity"
+        },
+        {
+            "location": "/#attribute-optional",
+            "text": "Name of an attribute within the entity state object. If this parameter is specified in addition to a fully qualified  entity_id ,  listen_state()  will subscribe to changes for just that attribute within that specific entity. The new and old parameters in the callback function will be provided with a single value representing the attribute.  The value  all  for attribute has special significance and will listen for any state change within the specified entity, and supply the callback functions with the entire state dictionary for the specified entity rather than an individual attribute value.",
+            "title": "attribute (optional)"
+        },
+        {
+            "location": "/#new-optional",
+            "text": "If  new  is supplied as a parameter, callbacks will only be made if the state of the selected attribute (usually  state ) in the new state match the value of  new .",
+            "title": "new =  (optional)"
+        },
+        {
+            "location": "/#old-optional",
+            "text": "If  old  is supplied as a parameter, callbacks will only be made if the state of the selected attribute (usually  state ) in the old state match the value of  old .  Note:  old  and  new  can be used singly or together.",
+            "title": "old =   (optional)"
+        },
+        {
+            "location": "/#duration-optional",
+            "text": "If duration is supplied as a parameter, the callback will not fire unless the state listened for is maintained for that number of seconds. This makes the most sense if a specific attribute is specified (or the default os  state  is used), an in conjunction with the  old  or  new  parameters, or both. When the callback is called, it is supplied with the values of  entity ,  attr ,  old  and  new  that were current at the time the actual event occured, since the assumption is that none of them have changed in the intervening period.    def my_callback(self, kwargs):\n    <do some useful work here>  (Scheduler callbacks are documented in detail later in this document)",
+            "title": "duration =   (optional)"
+        },
+        {
+            "location": "/#4242kwargs_1",
+            "text": "Zero or more keyword arguments that will be supplied to the callback when it is called.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_2",
+            "text": "# Listen for any state change and return the state attribute\nself.handle = self.listen_state(self.my_callback)\n\n# Listen for any state change involving a light and return the state attribute\nself.handle = self.listen_state(self.my_callback, \"light\")\n\n# Listen for a state change involving light.office1 and return the state attribute\nself.handle = self.listen_state(self.my_callback, \"light.office_1\")\n\n# Listen for a state change involving light.office1 and return the entire state as a dict\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", attribute = \"all\")\n\n# Listen for a state change involving the brightness attribute of light.office1\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", attribute = \"brightness\")\n\n# Listen for a state change involving light.office1 turning on and return the state attribute\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", new = \"on\")\n\n# Listen for a state change involving light.office1 changing from brightness 100 to 200 and return the state attribute\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", old = \"100\", new = \"200\")\n\n# Listen for a state change involving light.office1 changing to state on and remaining on for a minute\nself.handle = self.listen_state(self.my_callback, \"light.office_1\", new = \"on\", duration = 60)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#cancel_listen_state",
+            "text": "Cancel a  listen_state()  callback. This will mean that the App will no longer be notified for the specific state change that has been cancelled. Other state changes will continue to be monitored.",
+            "title": "cancel_listen_state()"
+        },
+        {
+            "location": "/#synopsis_3",
+            "text": "cancel_listen_state(handle)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_3",
+            "text": "Nothing",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_3",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#handle",
+            "text": "The handle returned when the  listen_state()  call was made.",
+            "title": "handle"
+        },
+        {
+            "location": "/#examples_3",
+            "text": "self.cancel_listen_state(self.office_light_handle)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#info_listen_state",
+            "text": "Get information on state a callback from it's handle.",
+            "title": "info_listen_state()"
+        },
+        {
+            "location": "/#synopsis_4",
+            "text": "entity, attribute, kwargs = self.info_listen_state(self.handle)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_4",
+            "text": "entity, attribute, kwargs - the values supplied when the callback was initially created.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_4",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#handle_1",
+            "text": "The handle returned when the  listen_state()  call was made.",
+            "title": "handle"
+        },
+        {
+            "location": "/#examples_4",
+            "text": "entity, attribute, kwargs = self.info_listen_state(self.handle)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#scheduler",
+            "text": "AppDaemon contains a powerful scheduler that is able to run with 1 second resolution to fire off specific events at set times, or after set delays, or even relative to sunrise and sunset. In general, events should be fired less than a second after specified but under certain circumstances there may be short additional delays.",
+            "title": "Scheduler"
+        },
+        {
+            "location": "/#about-schedule-callbacks",
+            "text": "As with State Change callbacks, Scheduler Callbacks expect to call into functions with a known and specific signature and a class defined Scheduler callback function should look like this:    def my_callback(self, kwargs):\n    <do some useful work here>  You can call the function whatever you like; you will reference it in the Scheduler call, and you can create as many callback functions as you need.  The parameters have the following meanings:",
+            "title": "About Schedule Callbacks"
+        },
+        {
+            "location": "/#self_1",
+            "text": "A standard Python object reference",
+            "title": "self"
+        },
+        {
+            "location": "/#4242kwargs_2",
+            "text": "A dictionary containing Zero or more keyword arguments to be supplied to the callback.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#creation-of-scheduler-callbacks",
+            "text": "Scheduler callbacks are created through use of a number of convenience functions which can be used to suit the situation.",
+            "title": "Creation of Scheduler Callbacks"
+        },
+        {
+            "location": "/#run_in",
+            "text": "Run the callback in a defined number of seconds. This is used to add a delay, for instance a 60 second delay before a light is turned off after it has been triggered by a motion detector. This callback should always be used instead of  time.sleep()  as discussed previously.",
+            "title": "run_in()"
+        },
+        {
+            "location": "/#synopsis_5",
+            "text": "self.handle = self.run_in(callback, delay, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_5",
+            "text": "A handle that can be used to cancel the timer.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_5",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback_1",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#delay",
+            "text": "Delay, in seconds before the callback is invoked.",
+            "title": "delay"
+        },
+        {
+            "location": "/#4242kwargs_3",
+            "text": "Arbitary keyword parameters to be provided to the callback function when it is invoked.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_5",
+            "text": "self.handle = self.run_in(self.run_in_c)\nself.handle = self.run_in(self.run_in_c, title = \"run_in5\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#run_once",
+            "text": "Run the callback once, at the specified time of day. If the time of day is in the past, the callback will occur on the next day.",
+            "title": "run_once()"
+        },
+        {
+            "location": "/#synopsis_6",
+            "text": "self.handle = self.run_once(callback, time, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_6",
+            "text": "A handle that can be used to cancel the timer.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_6",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback_2",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#time_1",
+            "text": "A Python  time  object that specifies when the callback will occur. If the time specified is in the past, the callback will occur the next day at the specified time.",
+            "title": "time"
+        },
+        {
+            "location": "/#4242kwargs_4",
+            "text": "Arbitary keyword parameters to be provided to the callback function when it is invoked.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_6",
+            "text": "# Run at 4pm today, or 4pm tomorrow if it is already after 4pm\nimport datetime\n...\nruntime = datetime.time(16, 0, 0)\nhandle = self.run_once(self.run_once_c, runtime)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#run_at",
+            "text": "Run the callback once, at the specified date and time.",
+            "title": "run_at()"
+        },
+        {
+            "location": "/#synopsis_7",
+            "text": "self.handle = self.run_at(callback, datetime, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_7",
+            "text": "A handle that can be used to cancel the timer.  run_at()  will raise an exception if the specified time is in the past.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_7",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback_3",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#datetime",
+            "text": "A Python  datetime  object that specifies when the callback will occur.",
+            "title": "datetime"
+        },
+        {
+            "location": "/#4242kwargs_5",
+            "text": "Arbitary keyword parameters to be provided to the callback function when it is invoked.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_7",
+            "text": "# Run at 4pm today\nimport datetime\n...\nruntime = datetime.time(16, 0, 0)\ntoday = datetime.date.today()\nevent = datetime.datetime.combine(today, runtime)\nhandle = self.run_once(self.run_once_c, event)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#run_daily",
+            "text": "Execute a callback at the same time every day. If the time has already passed, the function will not be invoked until the following day at the specified time.",
+            "title": "run_daily()"
+        },
+        {
+            "location": "/#synopsis_8",
+            "text": "self.handle = self.run_daily(callback, start, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_8",
+            "text": "A handle that can be used to cancel the timer.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_8",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback_4",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#start",
+            "text": "A Python  time  object that specifies when the callback will occur. If the time specified is in the past, the callback will occur the next day at the specified time.",
+            "title": "start"
+        },
+        {
+            "location": "/#4242kwargs_6",
+            "text": "Arbitary keyword parameters to be provided to the callback function when it is invoked.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_8",
+            "text": "# Run daily at 7pm\nimport datetime\n...\ntime = datetime.time(19, 0, 0)\nself.run_daily(self.run_daily_c, runtime)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#run_hourly",
+            "text": "Execute a callback at the same time every hour. If the time has already passed, the function will not be invoked until the following hour at the specified time.",
+            "title": "run_hourly()"
+        },
+        {
+            "location": "/#synopsis_9",
+            "text": "self.handle = self.run_hourly(callback, start, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_9",
+            "text": "A handle that can be used to cancel the timer.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_9",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback_5",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#start_1",
+            "text": "A Python  time  object that specifies when the callback will occur, the hour component of the time object is ignored. If the time specified is in the past, the callback will occur the next hour at the specified time. If time is not supplied, the callback will start an hour from the time that  run_hourly()  was executed.",
+            "title": "start"
+        },
+        {
+            "location": "/#4242kwargs_7",
+            "text": "Arbitary keyword parameters to be provided to the callback function when it is invoked.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_9",
+            "text": "# Run every hour, on the hour\nimport datetime\n...\ntime = datetime.time(0, 0, 0)\nself.run_hourly(self.run_hourly_c, runtime)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#run_minutely",
+            "text": "Execute a callback at the same time every minute. If the time has already passed, the function will not be invoked until the following minute at the specified time.",
+            "title": "run_minutely()"
+        },
+        {
+            "location": "/#synopsis_10",
+            "text": "self.handle = self.run_minutely(callback, start, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_10",
+            "text": "A handle that can be used to cancel the timer.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_10",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback_6",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#start_2",
+            "text": "A Python  time  object that specifies when the callback will occur, the hour and minute components of the time object are ignored. If the time specified is in the past, the callback will occur the next hour at the specified time. If time is not supplied, the callback will start a minute from the time that  run_minutely()  was executed.",
+            "title": "start"
+        },
+        {
+            "location": "/#4242kwargs_8",
+            "text": "Arbitary keyword parameters to be provided to the callback function when it is invoked.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_10",
+            "text": "# Run Every Minute on the minute\nimport datetime\n...\ntime = datetime.time(0, 0, 0)\nself.run_minutely(self.run_minutely_c, time)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#run_every",
+            "text": "Execute a repeating callback with a configurable delay starting at a specific time.",
+            "title": "run_every()"
+        },
+        {
+            "location": "/#synopsis_11",
+            "text": "self.handle = self.run_every(callback, time, repeat, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_11",
+            "text": "A handle that can be used to cancel the timer.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_11",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback_7",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#time_2",
+            "text": "A Python  datetime  object that specifies when the initial callback will occur.",
+            "title": "time"
+        },
+        {
+            "location": "/#repeat",
+            "text": "After the initial callback has occurred, another will occur every  repeat  seconds.",
+            "title": "repeat"
+        },
+        {
+            "location": "/#4242kwargs_9",
+            "text": "Arbitary keyword parameters to be provided to the callback function when it is invoked.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_11",
+            "text": "# Run every 17 minutes starting in 2 hours time\nimport datetime\n...\nself.run_every(self.run_every_c, time, 17 * 60)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#cancel_timer",
+            "text": "Cancel a previously created timer",
+            "title": "cancel_timer()"
+        },
+        {
+            "location": "/#synopsis_12",
+            "text": "self.cancel_timer(handle)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_12",
+            "text": "None",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_12",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#handle_2",
+            "text": "A handle value returned from the original call to create the timer.",
+            "title": "handle"
+        },
+        {
+            "location": "/#examples_12",
+            "text": "self.cancel_timer(handle)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#info_timer",
+            "text": "Get information on a scheduler event from it's handle.",
+            "title": "info_timer()"
+        },
+        {
+            "location": "/#synopsis_13",
+            "text": "time, interval, kwargs = self.info_timer(handle)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_13",
+            "text": "time - datetime object representing the next time the callback will be fired  interval - repeat interval if applicable,  0  otherwise.  kwargs - the values supplied when the callback was initially created.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_13",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#handle_3",
+            "text": "The handle returned when the scheduler call was made.",
+            "title": "handle"
+        },
+        {
+            "location": "/#examples_13",
+            "text": "time, interval, kwargs = self.info_timer(handle)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#scheduler-randomization",
+            "text": "All of the scheduler calls above support 2 additional optional arguments,  random_start  and  random_end . Using these arguments it is possible to randomize the firing of callbacks to the degree desired by setting the appropriate number of seconds with the parameters.   random_start  - start of range of the random time  random_end  - end of range of the random time    random_start  must always be numerically lower than  random_end , they can be negative to denote a random offset before and event, or positive to denote a random offset after an event. The event would be a an absolute or relative time or sunrise/sunset depending on whcih scheduler call you use and these values affect the base time by the spcified amount. If not specified, they will default to  0 .  For example:  # Run a callback in 2 minutes minus a random number of seconds between 0 and 60, e.g. run between 60 and 120 seconds from now\nself.handle = self.run_in(callback, 120, random_start = -60, **kwargs)\n# Run a callback in 2 minutes plus a random number of seconds between 0 and 60, e.g. run between 120 and 180 seconds from now\nself.handle = self.run_in(callback, 120, random_end = 60, **kwargs)\n# Run a callback in 2 minutes plus or minus a random number of seconds between 0 and 60, e.g. run between 60 and 180 seconds from now\nself.handle = self.run_in(callback, 120, random_start = -60, random_end = 60, **kwargs)",
+            "title": "Scheduler Randomization"
+        },
+        {
+            "location": "/#sunrise-and-sunset",
+            "text": "AppDaemon has a number of features to allow easy tracking of sunrise and sunset as well as a couple of scheduler functions. Note that the scheduler functions also support the randomization parameters described above, but they cannot be used in conjunction with the  offset  parameter`.",
+            "title": "Sunrise and Sunset"
+        },
+        {
+            "location": "/#run_at_sunrise",
+            "text": "Run a callback at or around sunrise.",
+            "title": "run_at_sunrise()"
+        },
+        {
+            "location": "/#synopsis_14",
+            "text": "self.handle = self.run_at_sunrise(callback, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_14",
+            "text": "A handle that can be used to cancel the timer.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_14",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback_8",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#offset",
+            "text": "The time in seconds that the callback should be delayed after sunrise. A negative value will result in the callback occurring before sunrise. This parameter cannot be combined with  random_start  or  random_end",
+            "title": "offset = "
+        },
+        {
+            "location": "/#4242kwargs_10",
+            "text": "Arbitary keyword parameters to be provided to the callback function when it is invoked.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_14",
+            "text": "import datetime\n...\n# Run 45 minutes before sunset\nself.run_at_sunrise(self.sun, offset = datetime.timedelta(minutes = -45).total_seconds(), \"Sunrise -45 mins\")\n# or you can just do the math yourself\nself.run_at_sunrise(self.sun, offset = 30 * 60, \"Sunrise +30 mins\")\n# Run at a random time +/- 60 minutes from sunrise\nself.run_at_sunrise(self.sun, random_start = -60*60, random_end = 60*60, \"Sunrise, random +/- 60 mins\")\n# Run at a random time between 30 and 60 minutes before sunrise\nself.run_at_sunrise(self.sun, random_start = -60*60, random_end = 30*60, \"Sunrise, random - 30 - 60 mins\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#run_at_sunset",
+            "text": "Run a callback at or around sunset.",
+            "title": "run_at_sunset()"
+        },
+        {
+            "location": "/#synopsis_15",
+            "text": "self.handle = self.run_at_sunset(callback, offset, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_15",
+            "text": "A handle that can be used to cancel the timer.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_15",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#callback_9",
+            "text": "Function to be invoked when the requested state change occurs. It must conform to the standard Scheduler Callback format documented above.",
+            "title": "callback"
+        },
+        {
+            "location": "/#offset_1",
+            "text": "The time in seconds that the callback should be delayed after sunrise. A negative value will result in the callback occurring before sunrise. This parameter cannot be combined with  random_start  or  random_end",
+            "title": "offset = "
+        },
+        {
+            "location": "/#4242kwargs_11",
+            "text": "Arbitary keyword parameters to be provided to the callback function when it is invoked.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_15",
+            "text": "# Example using timedelta\nimport datetime\n...\nself.run_at_sunset(self.sun, datetime.timedelta(minutes = -45).total_seconds(), \"Sunset -45 mins\")\n# or you can just do the math yourself\nself.run_at_sunset(self.sun, 30 * 60, \"Sunset +30 mins\")\n# Run at a random time +/- 60 minutes from sunset\nself.run_at_sunset(self.sun, random_start = -60*60, random_end = 60*60, \"Sunset, random +/- 60 mins\")\n# Run at a random time between 30 and 60 minutes before sunset\nself.run_at_sunset(self.sun, random_start = -60*60, random_end = 30*60, \"Sunset, random - 30 - 60 mins\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#sunrise",
+            "text": "Return the time that the next Sunrise will occur.",
+            "title": "sunrise()"
+        },
+        {
+            "location": "/#synopsis_16",
+            "text": "self.sunrise()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_16",
+            "text": "A Python datetime that represents the next time Sunrise will occur.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#examples_16",
+            "text": "rise_time = self.sunrise()",
+            "title": "Examples"
+        },
+        {
+            "location": "/#sunset",
+            "text": "Return the time that the next Sunset will occur.",
+            "title": "sunset()"
+        },
+        {
+            "location": "/#synopsis_17",
+            "text": "self.sunset()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_17",
+            "text": "A Python datetime that represents the next time Sunset will occur.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#examples_17",
+            "text": "set_time = self.sunset()",
+            "title": "Examples"
+        },
+        {
+            "location": "/#sun_up",
+            "text": "A function that allows you to determine if the sun is currently up.",
+            "title": "sun_up()"
+        },
+        {
+            "location": "/#synopsis_18",
+            "text": "result = self.sun_up()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_18",
+            "text": "True  if the sun is up, False otherwise.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#examples_18",
+            "text": "if self.sun_up():\n    do something",
+            "title": "Examples"
+        },
+        {
+            "location": "/#sun_down",
+            "text": "A function that allows you to determine if the sun is currently down.",
+            "title": "sun_down()"
+        },
+        {
+            "location": "/#synopsis_19",
+            "text": "result = self.sun_down()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_19",
+            "text": "True  if the sun is down, False otherwise.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#examples_19",
+            "text": "if self.sun_down():\n    do something",
+            "title": "Examples"
+        },
+        {
+            "location": "/#calling-services",
+            "text": "",
+            "title": "Calling Services"
+        },
+        {
+            "location": "/#about-services",
+            "text": "Services within Home Assistant are how changes are made to the system and its devices. Services can be used to turn lights on and off, set thermostats and a whole number of other things. Home Assistant supplies a single interface to all these disparate services that take arbitrary parameters. AppDaemon provides the  call_service()  function to call into Home Assistant and run a service. In addition, it also provides convenience functions for some of the more common services making calling them a little easier.",
+            "title": "About Services"
+        },
+        {
+            "location": "/#call_service",
+            "text": "Call service is the basic way of calling a service within AppDaemon. It can call any service and provide any required parameters. Available services can be found using the developer tools in the UI. For listed services, the part before the first period is the domain, and the part after is the service name. For instance,  light.turn_on  has a domain of  light  and a service name of  turn_on .",
+            "title": "call_service()"
+        },
+        {
+            "location": "/#synopsis_20",
+            "text": "self.call_service(self, service, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_20",
+            "text": "None",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_16",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#service",
+            "text": "The service name, e.g.  light.turn_on .",
+            "title": "service"
+        },
+        {
+            "location": "/#4242kwargs_12",
+            "text": "Each service has different parameter requirements. This argument allows you to specify a comma separated list of keyword value pairs, e.g.  entity_id = light.office_1 . These parameters will be different for every service and can be discovered using the developer tools. Most if not all service calls require an  entity_id  however, so use of the above example is very common with this call.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_20",
+            "text": "self.call_service(\"light/turn_on\", entity_id = \"light/office_lamp\", color_name = \"red\")\nself.call_service(\"notify/notify\", title = \"Hello\", message = \"Hello World\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#turn_on",
+            "text": "This is a convenience function for the  homassistant.turn_on  function. It is able to turn on pretty much anything in Home Assistant that can be turned on or run:   Lights  Switches  Scenes  Scripts   And many more.",
+            "title": "turn_on()"
+        },
+        {
+            "location": "/#synopsis_21",
+            "text": "self.turn_on(entity_id, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_21",
+            "text": "None",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_17",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#entity_id_1",
+            "text": "Fully qualified entity_id of the thing to be turned on, e.g.  light.office_lamp  or  scene.downstairs_on",
+            "title": "entity_id"
+        },
+        {
+            "location": "/#4242kwargs_13",
+            "text": "A comma separated list of key value pairs to allow specification of parameters over and above  entity_id .",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_21",
+            "text": "self.turn_on(\"switch.patio_lights\")\nself.turn_on(\"scene.bedrrom_on\")\nself.turn_on(\"light.office_1\", color_name = \"green\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#turn_off",
+            "text": "This is a convenience function for the  homassistant.turn_off  function. Like  homeassistant.turn_on , it is able to turn off pretty much anything in Home Assistant that can be turned off.",
+            "title": "turn_off()"
+        },
+        {
+            "location": "/#synopsis_22",
+            "text": "self.turn_off(entity_id)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_22",
+            "text": "None",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_18",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#entity_id_2",
+            "text": "Fully qualified entity_id of the thing to be turned off, e.g.  light.office_lamp  or  scene.downstairs_on .",
+            "title": "entity_id"
+        },
+        {
+            "location": "/#examples_22",
+            "text": "self.turn_off(\"switch.patio_lights\")\nself.turn_off(\"light.office_1\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#toggle",
+            "text": "This is a convenience function for the  homassistant.toggle  function. It is able to flip the state of pretty much anything in Home Assistant that can be turned on or off.",
+            "title": "toggle()"
+        },
+        {
+            "location": "/#synopsis_23",
+            "text": "self.toggle(entity_id)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_23",
+            "text": "None",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_19",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#entity_id_3",
+            "text": "Fully qualified entity_id of the thing to be toggled, e.g.  light.office_lamp  or  scene.downstairs_on .",
+            "title": "entity_id"
+        },
+        {
+            "location": "/#examples_23",
+            "text": "self.toggle(\"switch.patio_lights\")\nself.toggle(\"light.office_1\", color_name = \"green\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#select_value",
+            "text": "This is a convenience function for the  input_slider.select_value  function. It is able to set the value of an input_slider in Home Assistant.",
+            "title": "select_value()"
+        },
+        {
+            "location": "/#synopsis_24",
+            "text": "self.select_value(entity_id, value)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_24",
+            "text": "None",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_20",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#entity_id_4",
+            "text": "Fully qualified entity_id of the input_slider to be changed, e.g.  input_slider.alarm_hour .",
+            "title": "entity_id"
+        },
+        {
+            "location": "/#value",
+            "text": "The new value to set the input slider to.",
+            "title": "value"
+        },
+        {
+            "location": "/#examples_24",
+            "text": "self.select_value(\"input_slider.alarm_hour\", 6)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#select_option",
+            "text": "This is a convenience function for the  input_select.select_option  function. It is able to set the value of an input_select in Home Assistant.",
+            "title": "select_option()"
+        },
+        {
+            "location": "/#synopsis_25",
+            "text": "self.select_option(entity_id, option)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_25",
+            "text": "None",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_21",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#entity_id_5",
+            "text": "Fully qualified entity_id of the input_select to be changed, e.g.  input_select.mode .",
+            "title": "entity_id"
+        },
+        {
+            "location": "/#value_1",
+            "text": "The new value to set the input slider to.",
+            "title": "value"
+        },
+        {
+            "location": "/#examples_25",
+            "text": "self.select_option(\"input_select.mode\", \"Day\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#notify",
+            "text": "This is a convenience function for the  notify.notify  service. It will send a notification to a named notification service. If the name is not specified it will default to  notify/notify .",
+            "title": "notify()"
+        },
+        {
+            "location": "/#synopsis_26",
+            "text": "notify(message, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_26",
+            "text": "None",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_22",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#message",
+            "text": "Message to be sent to the notification service.",
+            "title": "message"
+        },
+        {
+            "location": "/#title",
+            "text": "Title of the notification - optional.",
+            "title": "title ="
+        },
+        {
+            "location": "/#name",
+            "text": "Name of the notification service - optional.",
+            "title": "name ="
+        },
+        {
+            "location": "/#examples_26",
+            "text": "self.notify(\"\", \"Switching mode to Evening\")\nself.notify(\"Switching mode to Evening\", title = \"Some Subject\", name = \"smtp\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#events",
+            "text": "",
+            "title": "Events"
+        },
+        {
+            "location": "/#about-events",
+            "text": "Events are a fundamental part of how Home Assistant works under the covers. HA has an event bus that all components can read and write to, enabling components to inform other components when important events take place. We have already seen how state changes can be propagated to AppDaemon - a state change however is merely an example of an event within Home Assistant. There are several other event types, among them are:   homeassistant_start  homeassistant_stop  state_changed  service_registered  call_service  service_executed  platform_discovered  component_loaded   Using AppDaemon, it is possible to subscribe to specific events as well as fire off events.  In addition to the Home Assistant supplied events, AppDaemon adds 2 more events. These are internal to AppDaemon and are not visible on the Home Assistant bus:   appd_started  - fired once when AppDaemon is first started and after Apps are initialized  ha_started  - fired every time AppDaemon detects a Home Assistant restart",
+            "title": "About Events"
+        },
+        {
+            "location": "/#about-event-callbacks",
+            "text": "As with State Change and Scheduler callbacks, Event Callbacks expect to call into functions with a known and specific signature and a class defined Scheduler callback function should look like this:    def my_callback(self, event_name, data, kwargs):\n    <do some useful work here>  You can call the function whatever you like - you will reference it in the Scheduler call, and you can create as many callback functions as you need.  The parameters have the following meanings:",
+            "title": "About Event Callbacks"
+        },
+        {
+            "location": "/#self_2",
+            "text": "A standard Python object reference.",
+            "title": "self"
+        },
+        {
+            "location": "/#event_name",
+            "text": "Name of the event that was called, e.g.  call_service .",
+            "title": "event_name"
+        },
+        {
+            "location": "/#data",
+            "text": "Any data that the system supplied with the event as a dict.",
+            "title": "data"
+        },
+        {
+            "location": "/#kwargs",
+            "text": "A dictionary containing Zero or more user keyword arguments to be supplied to the callback.",
+            "title": "kwargs"
+        },
+        {
+            "location": "/#listen_event",
+            "text": "Listen event sets up a callback for a specific event, or any event.",
+            "title": "listen_event()"
+        },
+        {
+            "location": "/#synopsis_27",
+            "text": "handle = listen_event(function, event = None, **kwargs):",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_27",
+            "text": "A handle that can be used to cancel the callback.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_23",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#function",
+            "text": "The function to be called when the event is fired.",
+            "title": "function"
+        },
+        {
+            "location": "/#event",
+            "text": "Name of the event to subscribe to. Can be a standard Home Assistant event such as  service_registered  or an arbitrary custom event such as  \"MODE_CHANGE\" . If no event is specified,  listen_event()  will subscribe to all events.",
+            "title": "event"
+        },
+        {
+            "location": "/#4242kwargs-optional",
+            "text": "One or more keyword value pairs representing App specific parameters to supply to the callback. If the keywords match values within the event data, they will act as filters, meaning that if they don't match the values, the callback will not fire.  As an example of this, a Minimote controller when activated will generate an event called  zwave.scene_activated , along with 2 pieces of data that are specific to the event -  entity_id  and  scene . If you include keyword values for either of those, the values supplied to the `listen_event()1 call must match the values in the event or it will not fire. If the keywords do not match any of the data in the event they are simply ignored.  Filtering will work with any event type, but it will be necessary to figure out the data associated with the event to understand what values can be filtered on. This can be achieved by examining Home Assistant's logfiles when the event fires.",
+            "title": "**kwargs (optional)"
+        },
+        {
+            "location": "/#examples_27",
+            "text": "self.listen_event(self.mode_event, \"MODE_CHANGE\")\n# Listen for a minimote event activating scene 3:\nself.listen_event(self.generic_event, \"zwave.scene_activated\", scene_id = 3)\n# Listen for a minimote event activating scene 3 from a specific minimote:\nself.listen_event(self.generic_event, \"zwave.scene_activated\", entity_id = \"minimote_31\", scene_id = 3)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#cancel_listen_event",
+            "text": "Cancels callbacks for a specific event.",
+            "title": "cancel_listen_event()"
+        },
+        {
+            "location": "/#synopsis_28",
+            "text": "cancel_listen_event(handle)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_28",
+            "text": "None.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_24",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#handle_4",
+            "text": "A handle returned from a previous call to  listen_event() .",
+            "title": "handle"
+        },
+        {
+            "location": "/#examples_28",
+            "text": "self.cancel_listen_event(handle)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#info_listen_event",
+            "text": "Get information on an event callback from it's handle.",
+            "title": "info_listen_event()"
+        },
+        {
+            "location": "/#synopsis_29",
+            "text": "service, kwargs = self.info_listen_event(handle)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_29",
+            "text": "service, kwargs - the values supplied when the callback was initially created.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_25",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#handle_5",
+            "text": "The handle returned when the  listen_event()  call was made.",
+            "title": "handle"
+        },
+        {
+            "location": "/#examples_29",
+            "text": "service, kwargs = self.info_listen_event(handle)",
+            "title": "Examples"
+        },
+        {
+            "location": "/#fire_event",
+            "text": "Fire an event on the HomeAssistant bus, for other components to hear.",
+            "title": "fire_event()"
+        },
+        {
+            "location": "/#synopsis_30",
+            "text": "fire_event(event, **kwargs)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_30",
+            "text": "None.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_26",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#event_1",
+            "text": "Name of the event. Can be a standard Home Assistant event such as  service_registered  or an arbitrary custom event such as  \"MODE_CHANGE\" .",
+            "title": "event"
+        },
+        {
+            "location": "/#4242kwargs_14",
+            "text": "Zero or more keyword arguments that will be supplied as part of the event.",
+            "title": "**kwargs"
+        },
+        {
+            "location": "/#examples_30",
+            "text": "self.fire_event(\"MY_CUSTOM_EVENT\", jam=\"true\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#event-callback-function-signature",
+            "text": "Functions called as an event callback will be supplied with 2 arguments:  def service(self, event_name, data):",
+            "title": "Event Callback Function Signature"
+        },
+        {
+            "location": "/#event_name_1",
+            "text": "The name of the event that caused the callback, e.g.  \"MODE_CHANGE\"  or  call_service .",
+            "title": "event_name"
+        },
+        {
+            "location": "/#data_1",
+            "text": "A dictionary containing any additional information associated with the event.",
+            "title": "data"
+        },
+        {
+            "location": "/#use-of-events-for-signalling-between-home-assistant-and-appdaemon",
+            "text": "Home Assistant allows for the creation of custom events and existing components can send and receive them. This provides a useful mechanism for signaling back and forth between Home Assistant and AppDaemon. For instance, if you would like to create a UI Element to fire off some code in Home Assistant, all that is necessary is to create a script to fire a custom event, then subscribe to that event in AppDaemon. The script would look something like this:  alias: Day\nsequence:\n- event: MODE_CHANGE\n  event_data:\n    mode: Day  The custom event  MODE_CHANGE  would be subscribed to with:  self.listen_event(self.mode_event, \"MODE_CHANGE\")  Home Assistant can send these events in a variety of other places - within automations, and also directly from Alexa intents. Home Assistant can also listen for custom events with it's automation component. This can be used to signal from AppDaemon code back to home assistant. Here is a sample automation:  automation:\n  trigger:\n    platform: event\n    event_type: MODE_CHANGE\n    ...\n    ...  This can be triggered with a call to AppDaemon's fire_event() as follows:  self.fire_event(\"MODE_CHANGE\", mode = \"Day\")",
+            "title": "Use of Events for Signalling between Home Assistant and AppDaemon"
+        },
+        {
+            "location": "/#presence_1",
+            "text": "Presence in Home Assistant is tracked using Device Trackers. The state of all device trackers can be found using the  get_state()  call, however AppDaemon provides several convenience functions to make this easier.",
+            "title": "Presence"
+        },
+        {
+            "location": "/#get_trackers",
+            "text": "Return a list of all device trackers. This is designed to be iterated over.",
+            "title": "get_trackers()"
+        },
+        {
+            "location": "/#synopsis_31",
+            "text": "tracker_list = get_trackers()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_31",
+            "text": "An iterable list of all device trackers.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#examples_31",
+            "text": "trackers = self.get_trackers()\nfor tracker in trackers:\n    do something",
+            "title": "Examples"
+        },
+        {
+            "location": "/#get_tracker_state",
+            "text": "Get the state of a tracker. The values returned depend in part on the configuration and type of device trackers in the system. Simpler tracker types like  Locative  or  NMAP  will return one of 2 states:   home  not_home   Some types of device tracker are in addition able to supply locations that have been configured as Geofences, in which case the name of that location can be returned.",
+            "title": "get_tracker_state()"
+        },
+        {
+            "location": "/#synopsis_32",
+            "text": "location = self.get_tracker_state(tracker_id)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_32",
+            "text": "A string representing the location of the tracker.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_27",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#tracker_id",
+            "text": "Fully qualified entity_id of the device tracker to query, e.g.  device_tracker.andrew .",
+            "title": "tracker_id"
+        },
+        {
+            "location": "/#examples_32",
+            "text": "trackers = self.get_trackers()\nfor tracker in trackers:\n  self.log(\"{} is {}\".format(tracker, self.get_tracker_state(tracker)))",
+            "title": "Examples"
+        },
+        {
+            "location": "/#everyone_home",
+            "text": "A convenience function to determine if everyone is home. Use this in preference to getting the state of  group.all_devices()  as it avoids a race condition when using state change callbacks for device trackers.",
+            "title": "everyone_home()"
+        },
+        {
+            "location": "/#synopsis_33",
+            "text": "result = self.everyone_home()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_33",
+            "text": "Returns  True  if everyone is at home,  False  otherwise.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#examples_33",
+            "text": "if self.everyone_home():\n    do something",
+            "title": "Examples"
+        },
+        {
+            "location": "/#anyone_home",
+            "text": "A convenience function to determine if one or more person is home. Use this in preference to getting the state of  group.all_devices()  as it avoids a race condition when using state change callbacks for device trackers.",
+            "title": "anyone_home()"
+        },
+        {
+            "location": "/#synopsis_34",
+            "text": "result = self.anyone_home()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_34",
+            "text": "Returns  True  if anyone is at home,  False  otherwise.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#examples_34",
+            "text": "if self.anyone_home():\n    do something",
+            "title": "Examples"
+        },
+        {
+            "location": "/#noone_home",
+            "text": "A convenience function to determine if no people are at home. Use this in preference to getting the state of group.all_devices() as it avoids a race condition when using state change callbacks for device trackers.",
+            "title": "noone_home()"
+        },
+        {
+            "location": "/#synopsis_35",
+            "text": "result = self.noone_home()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_35",
+            "text": "Returns  True  if no one is home,  False  otherwise.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#examples_35",
+            "text": "if self.noone_home():\n    do something",
+            "title": "Examples"
+        },
+        {
+            "location": "/#miscellaneous-helper-functions",
+            "text": "",
+            "title": "Miscellaneous Helper Functions"
+        },
+        {
+            "location": "/#time_3",
+            "text": "Returns a python  time  object representing the current time. Use this in preference to the standard Python ways to discover the current time, especially when using the \"Time Travel\" feature for testing.",
+            "title": "time()"
+        },
+        {
+            "location": "/#synopsis_36",
+            "text": "time()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_36",
+            "text": "A localised Python time object representing the current AppDaemon time.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_28",
+            "text": "None",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#example",
+            "text": "now = self.time()",
+            "title": "Example"
+        },
+        {
+            "location": "/#date",
+            "text": "Returns a python  date  object representing the current date. Use this in preference to the standard Python ways to discover the current date, especially when using the \"Time Travel\" feature for testing.",
+            "title": "date()"
+        },
+        {
+            "location": "/#synopsis_37",
+            "text": "date()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_37",
+            "text": "A localised Python time object representing the current AppDaemon date.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_29",
+            "text": "None",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#example_1",
+            "text": "today = self.date()",
+            "title": "Example"
+        },
+        {
+            "location": "/#datetime_1",
+            "text": "Returns a python  datetime  object representing the current date and time. Use this in preference to the standard Python ways to discover the current time, especially when using the \"Time Travel\" feature for testing.",
+            "title": "datetime()"
+        },
+        {
+            "location": "/#synopsis_38",
+            "text": "datetime()",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_38",
+            "text": "A localised Python datetime object representing the current AppDaemon date and time.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_30",
+            "text": "None",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#example_2",
+            "text": "now = self.datetime()",
+            "title": "Example"
+        },
+        {
+            "location": "/#convert_utc",
+            "text": "Home Assistant provides timestamps of several different sorts that may be used to gain additional insight into state changes. These timestamps are in UTC and are coded as ISO 8601 Combined date and time strings.  convert_utc()  will accept one of these strings and convert it to a localised Python datetime object representing the timestamp",
+            "title": "convert_utc()"
+        },
+        {
+            "location": "/#synopsis_39",
+            "text": "convert_utc(utc_string)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_39",
+            "text": "convert_utc(utc_string)  returns a localised Python datetime object representing the timestamp.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_31",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#utc_string",
+            "text": "An ISO 8601 encoded date and time string in the following format:  2016-07-13T14:24:02.040658-04:00",
+            "title": "utc_string"
+        },
+        {
+            "location": "/#example_3",
+            "text": "",
+            "title": "Example"
+        },
+        {
+            "location": "/#parse_time",
+            "text": "Takes a string representation of a time, or sunrise or sunset offset and converts it to a  datetime.time  object.",
+            "title": "parse_time()"
+        },
+        {
+            "location": "/#synopsis_40",
+            "text": "parse_time(time_string)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_40",
+            "text": "A  datetime.time  object, representing the time given in the  time_string  argument.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_32",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#time_string",
+            "text": "A representation of the time in a string format with one of the following formats:   HH:MM:SS - the time in Hours Minutes and Seconds, 24 hour format.  sunrise|sunset [+|- HH:MM:SS]- time of the next sunrise or sunset with an optional positive or negative offset in Hours Minutes and seconds",
+            "title": "time_string"
+        },
+        {
+            "location": "/#example_4",
+            "text": "time = self.parse_time(\"17:30:00\")\ntime = self.parse_time(\"sunrise\")\ntime = self.parse_time(\"sunset + 00:30:00\")\ntime = self.parse_time(\"sunrise + 01:00:00\")",
+            "title": "Example"
+        },
+        {
+            "location": "/#now_is_between",
+            "text": "Takes two string representations of a time, or sunrise or sunset offset and returns true if the current time is between those 2 times.  now_is_between()  can correctly handle transitions across midnight.",
+            "title": "now_is_between()"
+        },
+        {
+            "location": "/#synopsis_41",
+            "text": "now_is_between(start_time_string, end_time_string)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_41",
+            "text": "True  if the current time is within the specified start and end times,  False  otherwise.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_33",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#start_time_string-end_time_string",
+            "text": "A representation of the start and end time respectively in a string format with one of the following formats:   HH:MM:SS - the time in Hours Minutes and Seconds, 24 hour format.  sunrise | sunset  [+|- HH:MM:SS]- time of the next sunrise or sunset with an optional positive or negative offset in Hours Minutes and seconds",
+            "title": "start_time_string, end_time_string"
+        },
+        {
+            "location": "/#example_5",
+            "text": "if self.now_is_between(\"17:30:00\", \"08:00:00\"):\n    do something\nif self.now_is_between(\"sunset - 00:45:00\", \"sunrise + 00:45:00\"):\n    do something",
+            "title": "Example"
+        },
+        {
+            "location": "/#friendly_name",
+            "text": "frindly_name()  will return the Friendly Name of an entity if it has one.",
+            "title": "friendly_name()"
+        },
+        {
+            "location": "/#synopsis_42",
+            "text": "Name = self.friendly_name(entity_id)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_42",
+            "text": "The friendly name of the entity if it exists or the entity id if not.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#example_6",
+            "text": "tracker = \"device_tracker.andrew\"\nself.log(\"{}  ({}) is {}\".format(tracker, self.friendly_name(tracker), self.get_tracker_state(tracker)))",
+            "title": "Example"
+        },
+        {
+            "location": "/#split_entity",
+            "text": "split_entity()  will take a fully qualified entity id of the form  light.hall_light  and split it into 2 values, the device and the entity, e.g.  light  and  hall_light .",
+            "title": "split_entity()"
+        },
+        {
+            "location": "/#synopsis_43",
+            "text": "device, entity = self.split_entity(entity_id)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#parameters_34",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#entity_id_6",
+            "text": "Fully qualified entity id to be split.",
+            "title": "entity_id"
+        },
+        {
+            "location": "/#returns_43",
+            "text": "A list with 2 entries, the device and entity respectively.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#example_7",
+            "text": "device, entity = self.split_entity(entity_id)\nif device == \"scene\":\n    do something specific to scenes",
+            "title": "Example"
+        },
+        {
+            "location": "/#entity_exists",
+            "text": "",
+            "title": "entity_exists()"
+        },
+        {
+            "location": "/#synopsis_44",
+            "text": "entity_exists(entity)  entity_exists()  is used to verify if a given entity exists in Home Assistant or not.",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_44",
+            "text": "entity_exists()  returns  True  if the entity exists,  False  otherwise.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_35",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#entity_3",
+            "text": "The fully qualified name of the entity to check for (including the device type)",
+            "title": "entity"
+        },
+        {
+            "location": "/#examples_36",
+            "text": "# Return state for the entire system\nif self.entity_exists(\"light.living_room\"):\n  do something \n  ...",
+            "title": "Examples"
+        },
+        {
+            "location": "/#get_app",
+            "text": "get_app()  will return the instantiated object of another app running within the system. This is useful for calling functions or accessing variables that reside in different apps without requiring duplication of code.",
+            "title": "get_app()"
+        },
+        {
+            "location": "/#synopsis_45",
+            "text": "get_app(self, name)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#parameters_36",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#name_1",
+            "text": "Name of the app required. This is the name specified in header section of the config file, not the module or class.",
+            "title": "name"
+        },
+        {
+            "location": "/#returns_45",
+            "text": "An object reference to the class.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#example_8",
+            "text": "MyApp = self.get_app(\"MotionLights\")\nMyApp.turn_light_on()",
+            "title": "Example"
+        },
+        {
+            "location": "/#split_device_list",
+            "text": "split_device_list()  will take a comma separated list of device types (or anything else for that matter) and return them as an iterable list. This is intended to assist in use cases where the App takes a list of entities from an argument, e.g. a list of sensors to monitor. If only one entry is provided, an iterable list will still be returned to avoid the need for special processing.",
+            "title": "split_device_list()"
+        },
+        {
+            "location": "/#synopsis_46",
+            "text": "devices = split_device_list(list)",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_46",
+            "text": "A list of split devices with 1 or more entries.",
+            "title": "Returns"
+        },
+        {
+            "location": "/#example_9",
+            "text": "for sensor in self.split_device_list(self.args[\"sensors\"]):\n    do something for each sensor, e.g. make a state subscription",
+            "title": "Example"
+        },
+        {
+            "location": "/#writing-to-logfiles",
+            "text": "AppDaemon uses 2 separate logs - the general log and the error log. An AppDaemon App can write to either of these using the supplied convenience methods  log()  and  error() , which are provided as part of parent  AppDaemon  class, and the call will automatically pre-pend the name of the App making the call. The  -D  option of AppDaemon can be used to specify what level of logging is required and the logger objects will work as expected.  ApDaemon loggin also allows you to use placeholders for the module, fucntion and line number. If you include the following in the test of your message:  __function__\n__module__\n__line__  They will automatically be expanded to the appropriate values in the log message.",
+            "title": "Writing to Logfiles"
+        },
+        {
+            "location": "/#log",
+            "text": "",
+            "title": "log()"
+        },
+        {
+            "location": "/#synopsis_47",
+            "text": "log(message, level = \"INFO\")",
+            "title": "Synopsis"
+        },
+        {
+            "location": "/#returns_47",
+            "text": "Nothing",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_37",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#message_1",
+            "text": "The message to log.",
+            "title": "Message"
+        },
+        {
+            "location": "/#level",
+            "text": "The log level of the message - takes a string representing the standard logger levels.",
+            "title": "level"
+        },
+        {
+            "location": "/#examples_37",
+            "text": "self.log(\"Log Test: Parameter is {}\".format(some_variable))\nself.log(\"Log Test: Parameter is {}\".format(some_variable), level = \"ERROR\")\nself.log(\"Line: __line__, module: __module__, function: __function__, Message: Something bad happened\")```\n\n### error()\n\n#### Synopsis\n\n```python\nerror(message, level = \"WARNING\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#returns_48",
+            "text": "Nothing",
+            "title": "Returns"
+        },
+        {
+            "location": "/#parameters_38",
+            "text": "",
+            "title": "Parameters"
+        },
+        {
+            "location": "/#message_2",
+            "text": "The message to log.",
+            "title": "Message"
+        },
+        {
+            "location": "/#level_1",
+            "text": "The log level of the message - takes a string representing the standard logger levels.",
+            "title": "level"
+        },
+        {
+            "location": "/#examples_38",
+            "text": "self.error(\"Some Warning string\")\nself.error(\"Some Critical string\", level = \"CRITICAL\")",
+            "title": "Examples"
+        },
+        {
+            "location": "/#getting-information-in-apps-and-sharing-information-between-apps",
+            "text": "Sharing information between different Apps is very simple if required. Each app gets access to a global dictionary stored in a class attribute called  self.global_vars . Any App can add or read any key as required. This operation is not however threadsafe so some care is needed.  In addition, Apps have access to the entire configuration if required, meaning they can access AppDaemon configuration items as well as parameters from other Apps. To use this, there is a class attribute called  self.config . It contains a  ConfigParser  object, which is similar in operation to a  Dictionary . To access any apps parameters, simply reference the ConfigParser object using the Apps name (form the config file) as the first key, and the parameter required as the second, for instance:  other_apps_arg = self.config[\"some_app\"][\"some_parameter\"].  To get AppDaemon's config parameters, use the key \"AppDaemon\", e.g.:  app_timezone = self.config[\"AppDaemon\"][\"time_zone\"]  AppDaemon also exposes configuration from Home Assistant such as the Latitude and Longitude configured in HA. All of the information available from the Home Assistant  /api/config  endpoint is available in the  self.ha_config  dictionary. E.g.:  self.log(\"My current position is {}(Lat), {}(Long)\".format(self.ha_config[\"latitude\"], self.ha_config[\"longitude\"]))  And finally, it is also possible to use the AppDaemon as a global area for sharing parameters across Apps. Simply add the required parameters to the AppDaemon section of your config:  [AppDaemon]\nha_url = <some url>\nha_key = <some key>\n...\nglobal_var = hello world  Then access it as follows:  my_global_var = conf.config[\"AppDaemon\"][\"global_var\"]",
+            "title": "Getting Information in Apps and Sharing information between Apps"
+        },
+        {
+            "location": "/#development-workflow",
+            "text": "Developing Apps is intended to be fairly simple but is an exercise in programming like any other kind of Python programming. As such, it is expected that apps will contain syntax errors and will generate exceptions during the development process. AppDaemon makes it very easy to iterate through the development process as it will automatically reload code that has changed and also will reload code if any of the parameters in the configuration file change as well.  The recommended workflow for development is as follows:   Open a window and tail the  appdaemon.log  file  Open a second window and tail the  error.log  file  Open a third window or the editor of your choice for editing the App   With this setup, you will see that every time you write the file, AppDaemon will log the fact and let you know it has reloaded the App in the  appdaemon.log  file.  If there is an error in the compilation or a runtime error, this will be directed to the  error.log  file to enable you to see the error and correct it. When an error occurs, there will also be a warning message in  appdaemon.log  to tell you to check the error log.",
+            "title": "Development Workflow"
+        },
+        {
+            "location": "/#time-travel",
+            "text": "OK, time travel sadly isn't really possible but it can be very useful when testing Apps. For instance, imagine you have an App that turns a light on every day at sunset. It might be nice to test it without waiting for Sunset - and with AppDaemon's \"Time Travel\" features you can.",
+            "title": "Time Travel"
+        },
+        {
+            "location": "/#choosing-a-start-time",
+            "text": "Internally, AppDaemon keeps track of it's own time relative to when it was started. This make is possible to start AppDaemon with a different start time and date to the current time. For instance to test that sunset App, start AppDaemon at a time just before sunset and see if it works as expected. To do this, simply use the \"-s\" argument on AppDaemon's command line. e,g,:  $ appdaemon -s \"2016-06-06 19:16:00\"\n2016-09-06 17:16:00 INFO AppDaemon Version 1.3.2 starting\n2016-09-06 17:16:00 INFO Got initial state\n2016-09-06 17:16:00 INFO Loading Module: /export/hass/appdaemon_test/conf/test_apps/sunset.py\n...  Note the timestamps in the log - AppDaemon believes it is now just before sunset and will process any callbacks appropriately.",
+            "title": "Choosing a Start Time"
+        },
+        {
+            "location": "/#speeding-things-up",
+            "text": "Some Apps need to run for periods of a day or two for you to test all aspects. This can be time consuming, but Time Travel can also help here in two ways. The first is by speeding up time. To do this, simply use the  -t  option on the command line. This specifies the amount of time a second lasts while time travelling. The default of course is 1 second, but if you change it to  0.1  for instance,m AppDaemon will work 10x faster. If you set it to  0 , AppDaemon will work as fast as possible and, depending in your hardware, may be able to get through an entire day in a matter of minutes. Bear in mindo however, due to the threaded nature of AppDaemon, when you are running with  -t 0  you may see avctual events firing a little later than expected as the rest of the system tries to keep up with the timer. To set the tick time, start AppDaemon as follows:  $ appdaemon -t 0.1  AppDaemon also has an interval flag - think of this as a second multiplier. If the flag is set to 3600 for instance, each tick of the scheduler will jump the time forward by an hour. This is good for covering vast amounts of time quickly but event firing accuracy will suffer as a result. For example:  $ appdaemon -e 3600",
+            "title": "Speeding things up"
+        },
+        {
+            "location": "/#automatically-stopping",
+            "text": "AppDaemon can be set to terminate automatically at a specific time. This can be useful if you want to repeatedly rerun a test, for example to test that random values are behaving as expected. Simply specify the end time with the  -e  flag as follows:  $ appdaemon -e \"2016-06-06 10:10:00\"\n2016-09-06 17:16:00 INFO AppDaemon Version 1.3.2 starting\n2016-09-06 17:16:00 INFO Got initial state\n2016-09-06 17:16:00 INFO Loading Module: /export/hass/appdaemon_test/conf/test_apps/sunset.py\n...  \nThe `-e` flag is most useful when used in conjuntion with the -s flag and optionally the `-t` flag. For example, to run from just before sunset, for an hour, as fast as possible:\n\n```bash\n$ appdaemon -s \"2016-06-06 19:16:00\" -s \"2016-06-06 20:16:00\" -t 0",
+            "title": "Automatically stopping"
+        },
+        {
+            "location": "/#a-note-on-times",
+            "text": "Some Apps you write may depend on checking times of events relative to the current time. If you are time travelling this will not work if you use standard python library calls to get the current time and date etc. For this reason, always use the AppDamon supplied  time() ,  date()  and  datetime()  calls, documented earlier. These calls will consult with AppDaemon's internal time rather than the actual time and give you the correct values.",
+            "title": "A Note On Times"
+        }
+    ]
+}
